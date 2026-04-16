@@ -1,0 +1,233 @@
+/*
+ * Dark theme for the JavaFX HackRF spectrum analyzer UI. Replaces the ad-hoc
+ * setBackground(Color.BLACK) / setForeground(Color.WHITE) calls scattered throughout
+ * the legacy Swing code.
+ */
+
+.root {
+    -fx-base: #1b1b1b;
+    -fx-background: #121212;
+    -fx-control-inner-background: #1e1e1e;
+    -fx-accent: #11ff11;
+    -fx-focus-color: #11ff11;
+    -fx-faint-focus-color: #11ff1133;
+    -fx-text-base-color: #f0f0f0;
+    -fx-text-inner-color: #f0f0f0;
+    -fx-text-background-color: #f0f0f0;
+    -fx-text-fill: #f0f0f0;
+    -fx-font-family: "Segoe UI", "Inter", "Cantarell", sans-serif;
+    -fx-font-size: 13px;
+}
+
+.label {
+    -fx-text-fill: #f0f0f0;
+}
+
+.text-field,
+.combo-box,
+.spinner,
+.choice-box {
+    -fx-background-color: #1e1e1e;
+    -fx-text-fill: #f0f0f0;
+    -fx-prompt-text-fill: #888;
+    -fx-border-color: #3a3a3a;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+.text-field:focused,
+.spinner:focused,
+.combo-box:focused,
+.choice-box:focused {
+    -fx-border-color: -fx-accent;
+}
+
+.frequency-field {
+    -fx-font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
+    -fx-font-size: 16px;
+    -fx-font-weight: bold;
+    -fx-alignment: center-right;
+    -fx-padding: 4 8 4 8;
+}
+
+.frequency-field:invalid,
+.text-field:invalid {
+    -fx-border-color: #ff5555;
+    -fx-border-width: 1.5;
+}
+
+.frequency-stepper {
+    -fx-background-color: #2a2a2a;
+    -fx-text-fill: #f0f0f0;
+    -fx-font-family: "JetBrains Mono", "Consolas", monospace;
+    -fx-padding: 4 6 4 6;
+    -fx-min-width: 34;
+    -fx-border-color: #3a3a3a;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+}
+
+.frequency-stepper:hover {
+    -fx-background-color: #363636;
+    -fx-border-color: -fx-accent;
+}
+
+.frequency-stepper:armed,
+.frequency-stepper:pressed {
+    -fx-background-color: #202020;
+}
+
+.button {
+    -fx-background-color: #2a2a2a;
+    -fx-text-fill: #f0f0f0;
+    -fx-border-color: #3a3a3a;
+    -fx-background-radius: 4;
+    -fx-border-radius: 4;
+    -fx-padding: 6 12 6 12;
+}
+
+.button:hover {
+    -fx-background-color: #363636;
+    -fx-border-color: -fx-accent;
+}
+
+.button:armed,
+.button:pressed {
+    -fx-background-color: #1a1a1a;
+}
+
+.button.primary {
+    -fx-background-color: -fx-accent;
+    -fx-text-fill: #000000;
+}
+
+.button.danger {
+    -fx-background-color: #ff4444;
+    -fx-text-fill: #ffffff;
+}
+
+.check-box .box {
+    -fx-background-color: #1e1e1e;
+    -fx-border-color: #4a4a4a;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+}
+
+.check-box:selected .mark {
+    -fx-background-color: -fx-accent;
+}
+
+.slider .track {
+    -fx-background-color: #2a2a2a;
+}
+
+.slider .thumb {
+    -fx-background-color: -fx-accent;
+    -fx-background-insets: 0;
+    -fx-background-radius: 50%;
+}
+
+.range-slider .track {
+    -fx-background-color: #2a2a2a;
+}
+
+.range-slider .range-bar {
+    -fx-background-color: -fx-accent;
+    -fx-opacity: 0.4;
+}
+
+.range-slider .low-thumb,
+.range-slider .high-thumb {
+    -fx-background-color: -fx-accent;
+    -fx-background-radius: 50%;
+}
+
+.tab-pane .tab-header-background {
+    -fx-background-color: #121212;
+}
+
+.tab-pane .tab {
+    -fx-background-color: #1e1e1e;
+    -fx-padding: 4 12 4 12;
+}
+
+.tab-pane .tab:selected {
+    -fx-background-color: #2a2a2a;
+    -fx-border-color: -fx-accent transparent transparent transparent;
+    -fx-border-width: 2 0 0 0;
+}
+
+.tab .tab-label {
+    -fx-text-fill: #f0f0f0;
+}
+
+.settings-section-title {
+    -fx-font-weight: bold;
+    -fx-font-size: 14px;
+    -fx-text-fill: -fx-accent;
+    -fx-padding: 8 0 4 0;
+}
+
+.status-bar {
+    -fx-background-color: #0b0b0b;
+    -fx-padding: 4 8 4 8;
+    -fx-border-color: #3a3a3a transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+}
+
+.status-bar .label {
+    -fx-text-fill: #cccccc;
+    -fx-font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.status-bar .status-peak {
+    -fx-text-fill: -fx-accent;
+    -fx-font-weight: bold;
+}
+
+.status-separator,
+.toolbar-separator {
+    -fx-background-color: #3a3a3a;
+}
+
+.chart-toolbar {
+    -fx-background-color: #161616;
+    -fx-border-color: transparent transparent #2a2a2a transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+.chart-toolbar .button.danger {
+    -fx-background-color: #ff4444;
+    -fx-text-fill: #ffffff;
+}
+
+.preset-chip {
+    -fx-padding: 2 8 2 8;
+    -fx-font-size: 11px;
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+}
+
+.preset-caption {
+    -fx-text-fill: #888;
+    -fx-font-size: 11px;
+    -fx-padding: 2 4 2 0;
+}
+
+.palette-readout {
+    -fx-text-fill: #aaa;
+    -fx-font-family: "JetBrains Mono", "Consolas", monospace;
+    -fx-font-size: 11px;
+}
+
+.spectrum-chart,
+.waterfall-canvas {
+    -fx-background-color: #000000;
+}
+
+.frequency-range-selector {
+    -fx-background-color: #121212;
+    -fx-border-color: #2a2a2a;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}

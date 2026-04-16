@@ -25,6 +25,22 @@ public class DatasetSpectrum implements Cloneable
 	protected  final int	freqShift;
 	protected  float[]		spectrum;
 	protected  float		spectrumInitPower;
+
+	/**
+	 * Per-bin frequency in MHz (already shifted). Final because freqStartHz,
+	 * fftBinSizeHz, freqShift and spectrum.length never change after the
+	 * dataset is constructed; sharing the same array across all chart frames
+	 * removes ~7 MB/s of allocations at 30 fps with 4 visible series.
+	 */
+	protected final float[] frequencyAxisMHz;
+
+	/**
+	 * Stable snapshot of {@link #spectrum} taken on the processing thread
+	 * before publishing a frame to the chart. The chart reads from this
+	 * snapshot on the FX thread, so we never see torn updates while the
+	 * processing thread continues writing.
+	 */
+	protected final float[] spectrumSnapshot;
 	
 	/**
 	 * Inits
@@ -47,6 +63,14 @@ public class DatasetSpectrum implements Cloneable
 		int datapoints = (int) (Math.ceil(freqStopMHz - freqStartMHz) * 1000000d / fftBinSizeHz);
 		spectrum = new float[datapoints];
 		Arrays.fill(spectrum, spectrumInitPower);
+
+		frequencyAxisMHz = new float[datapoints];
+		for (int i = 0; i < datapoints; i++) {
+			frequencyAxisMHz[i] = (freqStartHz + fftBinSizeHz * i) / 1_000_000f + freqShift;
+		}
+
+		spectrumSnapshot = new float[datapoints];
+		Arrays.fill(spectrumSnapshot, spectrumInitPower);
 
 		if (useCached) {
 			for (int j = 0; j < 5; j++) {
@@ -113,15 +137,18 @@ public class DatasetSpectrum implements Cloneable
 	 * @return
 	 */
 	public XYSeriesImmutable createSpectrumDataset(String name) {
-		float[] xValues	= new float[spectrum.length];
-		float[] yValues	= spectrum;
-		for (int i = 0; i < spectrum.length; i++)
-		{
-			float freq = (freqStartHz + fftBinSizeHz * i) / 1000000f;
-			xValues[i]	= freq + freqShift;
+		return new XYSeriesImmutable(name, frequencyAxisMHz, spectrumSnapshot);
+	}
+
+	/**
+	 * Copy live working arrays into snapshot buffers. Must be called on the
+	 * processing thread between {@code refresh*Spectrum()} and publishing the
+	 * {@code SpectrumFrame} so the FX render reads stable data.
+	 */
+	public void snapshotForChart(boolean realtime) {
+		if (realtime) {
+			System.arraycopy(spectrum, 0, spectrumSnapshot, 0, spectrum.length);
 		}
-		XYSeriesImmutable xySeriesF	= new XYSeriesImmutable(name, xValues, yValues);
-		return xySeriesF;
 	}
 	
 	/**

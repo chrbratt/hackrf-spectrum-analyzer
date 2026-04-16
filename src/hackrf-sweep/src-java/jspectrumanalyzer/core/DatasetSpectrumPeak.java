@@ -33,6 +33,15 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	protected float[]	spectrumMaxHold;
 	protected float[]	spectrumPeakHold;
 	protected float[]	spectrumAverage;
+
+	/**
+	 * Snapshot buffers passed to JFreeChart on the FX thread. Populated on the
+	 * processing thread by {@link #snapshotForChart} so the chart never reads
+	 * arrays that the processing thread is still mutating.
+	 */
+	protected final float[] peakHoldSnapshot;
+	protected final float[] maxHoldSnapshot;
+	protected final float[] averageSnapshot;
 	
 	public DatasetSpectrumPeak(float fftBinSizeHz, int freqStartMHz, int freqStopMHz, float spectrumInitPower,
 			float peakFallThreshold, long peakFalloutMillis, long peakHoldMillis, int freqShift, int avgIterations,
@@ -64,7 +73,13 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		Arrays.fill(sumVal, avgIterations * spectrumInitPower);
 		peakHoldTime = new long[datapoints];
 		Arrays.fill(peakHoldTime, System.currentTimeMillis());
-		
+
+		peakHoldSnapshot = new float[datapoints];
+		maxHoldSnapshot = new float[datapoints];
+		averageSnapshot = new float[datapoints];
+		Arrays.fill(peakHoldSnapshot, spectrumInitPower);
+		Arrays.fill(maxHoldSnapshot, spectrumInitPower);
+		Arrays.fill(averageSnapshot, spectrumInitPower);
 	}
 
 	public void setPeakFalloutMillis(long peakFalloutMillis) {
@@ -105,39 +120,33 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	}
 	
 	public XYSeriesImmutable createPeaksDataset(String name) {
-		float[] xValues	= new float[spectrum.length];
-		float[] yValues	= spectrumPeakHold;
-		for (int i = 0; i < spectrum.length; i++)
-		{
-			float freq = (freqStartHz + fftBinSizeHz * i) / 1000000f;
-			xValues[i]	= freq + freqShift;
-		}
-		XYSeriesImmutable xySeriesF	= new XYSeriesImmutable(name, xValues, yValues);
-		return xySeriesF;
+		return new XYSeriesImmutable(name, frequencyAxisMHz, peakHoldSnapshot);
 	}
 
 	public XYSeriesImmutable createMaxHoldDataset(String name) {
-		float[] xValues	= new float[spectrum.length];
-		float[] yValues	= spectrumMaxHold;
-		for (int i = 0; i < spectrum.length; i++)
-		{
-			float freq = (freqStartHz + fftBinSizeHz * i) / 1000000f;
-			xValues[i]	= freq + freqShift;
-		}
-		XYSeriesImmutable xySeriesF	= new XYSeriesImmutable(name, xValues, yValues);
-		return xySeriesF;
+		return new XYSeriesImmutable(name, frequencyAxisMHz, maxHoldSnapshot);
 	}
-	
+
 	public XYSeriesImmutable createAverageDataset(String name) {
-		float[] xValues	= new float[spectrum.length];
-		float[] yValues	= spectrumAverage;
-		for (int i = 0; i < spectrum.length; i++)
-		{
-			float freq = (freqStartHz + fftBinSizeHz * i) / 1000000f;
-			xValues[i]	= freq + freqShift;
+		return new XYSeriesImmutable(name, frequencyAxisMHz, averageSnapshot);
+	}
+
+	/**
+	 * Copy the live working buffers into the snapshot buffers used by the
+	 * chart on the FX thread. Only copies what the chart will actually read.
+	 */
+	public void snapshotForChart(boolean peaks, boolean average,
+	                             boolean maxHold, boolean realtime) {
+		super.snapshotForChart(realtime);
+		if (peaks) {
+			System.arraycopy(spectrumPeakHold, 0, peakHoldSnapshot, 0, peakHoldSnapshot.length);
 		}
-		XYSeriesImmutable xySeriesF	= new XYSeriesImmutable(name, xValues, yValues);
-		return xySeriesF;
+		if (maxHold) {
+			System.arraycopy(spectrumMaxHold, 0, maxHoldSnapshot, 0, maxHoldSnapshot.length);
+		}
+		if (average) {
+			System.arraycopy(spectrumAverage, 0, averageSnapshot, 0, averageSnapshot.length);
+		}
 	}
 	
 	public double[] calculateSpectrumPeakPower(int PowerFluxCalibration){

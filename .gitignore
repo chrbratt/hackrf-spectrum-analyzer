@@ -1,4 +1,15 @@
-/release
-/*.webm
-/*.cmd
-/*.exe
+/.gradle/
+**/.gradle/
+/build/
+**/build/
+/out/
+/bin/
+*.class
+.idea/
+*.iml
+/.vscode/
+/.cursor/
+hackrf-2026.01.3/*
+
+# Keep gradle wrapper jar tracked
+!gradle/wrapper/gradle-wrapper.jar

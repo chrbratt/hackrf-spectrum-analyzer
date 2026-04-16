@@ -1,6 +1,44 @@
 # HackRF Spectrum Analyzer for Windows
 based on Pavsa's HackRF hackrf_sweep Spectrum Analyzer
 
+## Run from source
+
+```
+.\gradlew.bat run
+```
+
+## Build from source
+
+The build requires JDK 21 (Gradle's toolchain support will download it if missing).
+Source layout: CSV resources (`presets.csv`, `freq/*.csv`) live on the classpath
+inside the application jar, so no external resource folder is needed.
+
+| Task                      | Output                                                       |
+| ------------------------- | ------------------------------------------------------------ |
+| `.\gradlew.bat build`     | Compiles, runs tests, produces `build/libs/*.jar`.           |
+| `.\gradlew.bat installDist` | Self-contained folder in `build/install/...` (no JRE bundled). |
+| `.\gradlew.bat jpackageWinApp` | Self-contained Windows **app-image** (folder) with private JRE. No installer tools required. Output: `build/jpackage/HackRF Spectrum Analyzer/`. |
+| `.\gradlew.bat jpackageWinMsi` | Windows **MSI installer** with private JRE. Requires the WiX Toolset (see below). Output: `build/jpackage/*.msi`. |
+
+### WiX Toolset (only for `jpackageWinMsi`)
+
+`jpackage --type msi` invokes the WiX 3.x command-line tools. If `candle.exe` /
+`light.exe` are not on `PATH` the build fails with
+`Error: Can not find WiX tools (light.exe)`.
+
+1. Download **WiX Toolset v3.14** (or later 3.x) from
+   https://github.com/wixtoolset/wix3/releases
+2. Install (default location: `C:\Program Files (x86)\WiX Toolset v3.14\bin`).
+3. Add that `bin` folder to `PATH` and open a fresh PowerShell:
+   ```
+   where.exe candle.exe
+   where.exe light.exe
+   ```
+   Both should print a path. Then re-run `.\gradlew.bat jpackageWinMsi`.
+
+> `jpackageWinApp` does **not** need WiX and is a good way to smoke-test the
+> packaged app without touching installer infrastructure.
+
 ### Screenshots:
 ![FULL_920-960MHz_demo](https://github.com/user-attachments/assets/63bb1506-ebf1-4002-b53a-cc934590743b)
 ![FULL_2400-2483MHz_demo3](https://github.com/user-attachments/assets/699d551f-88f3-4ad6-a107-120bf3b513e4)
@@ -39,14 +77,16 @@ Additionaly, in "freq" folder you can edit frequency allocation tables or make y
 ### Installation:
 Make sure HackRF is using at least the minimum firmware version (see above) 
 
-1. Minimum Windows 7 x64 or Vista x64 with extended kernel
-2. Minimum Java JRE 64bit v1.8 ([Java JRE for Windows x64](http://www.oracle.com/technetwork/java/javase/downloads/jre8-downloads-2133155.html)) 
-3. [Download the latest version of Spectrum Analyzer](https://github.com/voxo22/hackrf-spectrum-analyzer/releases) and unzip
-4. Connect and install HackRF as a libusb device
+1. Windows 10 x64 or later.
+2. Install from one of:
+   - The MSI produced by `.\gradlew.bat jpackageWinMsi` (bundles a private JRE; no separate Java install needed), or
+   - The app-image folder produced by `.\gradlew.bat jpackageWinApp`, or
+   - The zip produced by `.\gradlew.bat installDist` (requires a system-installed JDK 21+).
+3. Connect and install HackRF as a libusb device
     - [Download Zadig](https://zadig.akeo.ie/) (or use packed one) and install
     - Goto Options and check List All Devices
     - Find "HackRF One" and select Driver "WinUSB" and click install
-5. Run "v2.21.jar"
+4. Launch "HackRF Spectrum Analyzer".
 
 ### License:
 GPL v3

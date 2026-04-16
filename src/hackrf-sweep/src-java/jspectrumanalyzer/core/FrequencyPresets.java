@@ -1,22 +1,27 @@
 package jspectrumanalyzer.core;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class FrequencyPresets {
+	private static final String RESOURCE_PATH = "/presets.csv";
+
 	private List<Preset> presets;
 
 	public FrequencyPresets() throws FileNotFoundException {
-		loadTableFromCSV("presets", new FileInputStream(new File("presets.csv")));
+		InputStream is = FrequencyPresets.class.getResourceAsStream(RESOURCE_PATH);
+		if (is == null) {
+			throw new FileNotFoundException(
+					"Classpath resource '" + RESOURCE_PATH + "' not found. "
+							+ "Check that src/hackrf-sweep/presets.csv is on the resource path.");
+		}
+		loadTableFromCSV("presets", is);
 	}
 
 	public List<Preset> getList() {
@@ -27,7 +32,7 @@ public class FrequencyPresets {
 		BufferedReader reader = null;
 		presets = new ArrayList<>();
 		try {
-			reader = new BufferedReader(new InputStreamReader(is));
+			reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
 			String line = null;
 			int lineNo = 0;
 			while ((line = reader.readLine()) != null) {
