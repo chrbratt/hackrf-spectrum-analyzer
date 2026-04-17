@@ -19,6 +19,7 @@ inside the application jar, so no external resource folder is needed.
 | `.\gradlew.bat installDist` | Self-contained folder in `build/install/...` (no JRE bundled). |
 | `.\gradlew.bat jpackageWinApp` | Self-contained Windows **app-image** (folder) with private JRE. No installer tools required. Output: `build/jpackage/HackRF Spectrum Analyzer/`. |
 | `.\gradlew.bat jpackageWinMsi` | Windows **MSI installer** with private JRE. Requires the WiX Toolset (see below). Output: `build/jpackage/*.msi`. |
+| `.\gradlew.bat buildHackrfSweepDll` | Rebuild the bundled `hackrf-sweep.dll` from the upstream HackRF 2026.01.3 source with MSVC. See [src/hackrf-sweep/native/BUILD_NATIVE.md](src/hackrf-sweep/native/BUILD_NATIVE.md) for the one-time toolchain setup (MSVC + vcpkg). The other tasks above pick up the freshly built DLL automatically; if it's missing they fall back to the legacy MinGW DLL in `src/hackrf-sweep/lib/win32-x86-64/`. |
 
 ### WiX Toolset (only for `jpackageWinMsi`)
 
@@ -72,7 +73,7 @@ You can customize "presets.csv" file by adding or deleting requested rows. Follo
 Additionaly, in "freq" folder you can edit frequency allocation tables or make your own. "Slash" character (/) in text columns hyphenates rows.
 
 ### Requirements:
-* HackRF One with [Firmware 2023.01.1](https://github.com/mossmann/hackrf/releases/tag/v2023.01.1) or newer 
+* HackRF One or HackRF Pro with firmware 2023.01.1 or newer (the bundled DLL is built against the [2026.01.3 release](https://github.com/greatscottgadgets/hackrf/releases) of the upstream tools).
 
 ### Installation:
 Make sure HackRF is using at least the minimum firmware version (see above) 

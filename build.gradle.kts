@@ -94,7 +94,23 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-val nativeLibDir = file("src/hackrf-sweep/lib/win32-x86-64").absolutePath
+// The MSVC build (see src/hackrf-sweep/native/CMakeLists.txt + BUILD_NATIVE.md)
+// stages all four runtime DLLs (hackrf-sweep, fftw3f, libusb-1.0, pthreadVC3)
+// into build/native/dist. Prefer that location when present so a freshly
+// built DLL gets picked up automatically; otherwise fall back to the
+// pre-built MinGW DLLs that ship in the repo.
+val msvcNativeDir = layout.buildDirectory.dir("native/dist").get().asFile
+val legacyNativeDir = file("src/hackrf-sweep/lib/win32-x86-64")
+val nativeLibDir: String =
+    if (msvcNativeDir.resolve("hackrf-sweep.dll").exists())
+        msvcNativeDir.absolutePath
+    else
+        legacyNativeDir.absolutePath
+val nativeLibSourceDir: File =
+    if (msvcNativeDir.resolve("hackrf-sweep.dll").exists())
+        msvcNativeDir
+    else
+        legacyNativeDir
 
 application {
     // Main wraps FxApp so jpackage (which puts JavaFX on the classpath, not the
@@ -109,7 +125,7 @@ application {
 distributions {
     main {
         contents {
-            from("src/hackrf-sweep/lib/win32-x86-64") {
+            from(nativeLibSourceDir) {
                 into("native")
                 include("*.dll")
             }
@@ -139,6 +155,10 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.named<Test>("test") {
     useJUnitPlatform()
+    // Let the JNA load-test (HackRFSweepNativeBridgeLoadTest) find the
+    // freshly built hackrf-sweep.dll; the test itself is skipped if the
+    // path is missing or we're not on Windows.
+    systemProperty("jna.library.path", nativeLibDir)
 }
 
 // The openjfx plugin wires JavaFX modules onto the default `run` task only,
@@ -163,7 +183,7 @@ tasks.register<Copy>("stageJpackageInput") {
     into(layout.buildDirectory.dir("jpackage-input"))
     from(tasks.named<Jar>("jar"))
     from(configurations.runtimeClasspath)
-    from("src/hackrf-sweep/lib/win32-x86-64") {
+    from(nativeLibSourceDir) {
         include("*.dll")
     }
 }
@@ -192,6 +212,86 @@ fun jpackageCommand(type: String): List<String> {
         // jpackage copies --input into <APPDIR>. JNA finds hackrf-sweep.dll via
         // jna.library.path; Windows resolves the sibling DLLs from the same dir.
         addAll(listOf("--java-options", "-Djna.library.path=\$APPDIR"))
+    }
+}
+
+// --------------------------------------------------------------------
+// Native DLL build (MSVC, via vcpkg).
+// --------------------------------------------------------------------
+// Configure & build src/hackrf-sweep/native/CMakeLists.txt -> hackrf-sweep.dll.
+//
+// Requires (one-time setup, see BUILD_NATIVE.md):
+//   - Visual Studio 2022 Build Tools with the C++ workload.
+//   - vcpkg cloned to %VCPKG_ROOT% (defaults to C:\vcpkg) with these
+//     packages installed for the x64-windows triplet:
+//         pthreads libusb fftw3
+//   - The HackRF release source extracted under <repo>/hackrf-2026.01.3/
+//     (override with -PhackrfSourceDir=<path>).
+//
+// Run as:  ./gradlew buildHackrfSweepDll
+val vcpkgRoot = providers.environmentVariable("VCPKG_ROOT")
+    .orElse("C:/vcpkg").get()
+// CMake parses the value of -D options as a CMake string, where '\' starts an
+// escape sequence. Force forward slashes so Windows absolute paths survive.
+val hackrfSourceDir: String = ((project.findProperty("hackrfSourceDir") as String?)
+    ?: file("hackrf-2026.01.3/hackrf-2026.01.3").absolutePath).replace('\\', '/')
+val nativeBuildDir = layout.buildDirectory.dir("native").get().asFile
+
+val cmakeExe: String by lazy {
+    // Prefer cmake on PATH; otherwise fall back to the copy bundled with
+    // VS Build Tools so users without a standalone install still build.
+    val onPath = ProcessBuilder("where", "cmake")
+        .redirectErrorStream(true).start()
+    onPath.waitFor()
+    if (onPath.exitValue() == 0) "cmake"
+    else "C:/Program Files (x86)/Microsoft Visual Studio/2022/" +
+        "BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+}
+
+val configureHackrfSweepDll by tasks.registering(Exec::class) {
+    group = "native"
+    description = "Run cmake configure for the hackrf-sweep MSVC build."
+    onlyIf { OperatingSystem.current().isWindows }
+    doFirst {
+        nativeBuildDir.mkdirs()
+        val srcCheck = file("$hackrfSourceDir/host/libhackrf/src/hackrf.c")
+        check(srcCheck.exists()) {
+            "HackRF source not found at $srcCheck. Extract the official " +
+            "hackrf-2026.01.3 release into <repo>/hackrf-2026.01.3 or pass " +
+            "-PhackrfSourceDir=<path>."
+        }
+        val toolchain = file("$vcpkgRoot/scripts/buildsystems/vcpkg.cmake")
+        check(toolchain.exists()) {
+            "vcpkg toolchain not found at $toolchain. Set VCPKG_ROOT or " +
+            "install vcpkg per BUILD_NATIVE.md."
+        }
+    }
+    commandLine = listOf(
+        cmakeExe,
+        "-S", file("src/hackrf-sweep/native").absolutePath,
+        "-B", nativeBuildDir.absolutePath,
+        "-G", "Visual Studio 17 2022",
+        "-A", "x64",
+        "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot/scripts/buildsystems/vcpkg.cmake",
+        "-DVCPKG_TARGET_TRIPLET=x64-windows",
+        "-DHACKRF_SOURCE_DIR=$hackrfSourceDir",
+    )
+}
+
+tasks.register<Exec>("buildHackrfSweepDll") {
+    group = "native"
+    description = "Build hackrf-sweep.dll (and its runtime DLLs) with MSVC."
+    onlyIf { OperatingSystem.current().isWindows }
+    dependsOn(configureHackrfSweepDll)
+    commandLine = listOf(
+        cmakeExe,
+        "--build", nativeBuildDir.absolutePath,
+        "--config", "Release",
+    )
+    doLast {
+        val out = nativeBuildDir.resolve("dist/hackrf-sweep.dll")
+        check(out.exists()) { "Build did not produce $out" }
+        logger.lifecycle("Built native DLL: $out")
     }
 }
 
