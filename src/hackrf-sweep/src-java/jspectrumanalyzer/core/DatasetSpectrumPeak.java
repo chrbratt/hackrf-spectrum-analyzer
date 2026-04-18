@@ -12,6 +12,14 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 {
 	protected long		lastAdded			= System.currentTimeMillis();
 	protected long[]	peakHoldTime;
+	protected long[]	maxHoldUpdateTime;
+	/**
+	 * Per-bin lifetime for the max-hold trace, in milliseconds.
+	 * 0 = legacy "infinite hold" behaviour. When positive, a bin whose held
+	 * value has not been beaten for this long is reset to {@link #spectrumInitPower}
+	 * so old peaks fade away on their own.
+	 */
+	protected volatile long maxHoldFalloutMillis = 0;
 	protected long		peakFalloutMillis	= 1000;
 	protected long		peakHoldMillis;
 	protected float		peakFallThreshold;
@@ -73,6 +81,8 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		Arrays.fill(sumVal, avgIterations * spectrumInitPower);
 		peakHoldTime = new long[datapoints];
 		Arrays.fill(peakHoldTime, System.currentTimeMillis());
+		maxHoldUpdateTime = new long[datapoints];
+		Arrays.fill(maxHoldUpdateTime, System.currentTimeMillis());
 
 		peakHoldSnapshot = new float[datapoints];
 		maxHoldSnapshot = new float[datapoints];
@@ -92,6 +102,15 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	
 	public void setPeakHoldMillis(long peakHoldMillis) {
 		this.peakHoldMillis = peakHoldMillis;
+	}
+
+	/**
+	 * Live-update the per-bin max-hold lifetime. {@code 0} disables the decay
+	 * (returns to legacy infinite hold). Safe to call from any thread; the
+	 * processing thread reads this value once per sweep.
+	 */
+	public void setMaxHoldFalloutMillis(long millis) {
+		this.maxHoldFalloutMillis = Math.max(0L, millis);
 	}
 	
 	public void setAvgIterations(int avgIterations) {
@@ -242,14 +261,27 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	
 	public void refreshMaxHoldSpectrum()
 	{
+		// Snapshot the volatile field so a concurrent UI change can't make us
+		// flip mid-loop between "decaying" and "infinite hold".
+		final long fallout = maxHoldFalloutMillis;
+		final long now = System.currentTimeMillis();
 		for (int spectrIndex = 0; spectrIndex < spectrum.length; spectrIndex++)
 		{
-			if (spectrum[spectrIndex] > spectrumMaxHold[spectrIndex])
+			float sample = spectrum[spectrIndex];
+			if (sample > spectrumMaxHold[spectrIndex])
 			{
-				spectrumMaxHold[spectrIndex] = spectrum[spectrIndex];
+				spectrumMaxHold[spectrIndex] = sample;
+				maxHoldUpdateTime[spectrIndex] = now;
+			}
+			else if (fallout > 0 && (now - maxHoldUpdateTime[spectrIndex]) >= fallout)
+			{
+				// Bin's stored peak has aged out without being beaten - drop
+				// it back to the live sample so old activity stops painting
+				// the trace forever.
+				spectrumMaxHold[spectrIndex] = sample;
+				maxHoldUpdateTime[spectrIndex] = now;
 			}
 		}
-		//System.out.println(System.currentTimeMillis());
 	}
 	
 	public void refreshAverageSpectrum()
@@ -284,6 +316,7 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	public void resetMaxHold()
 	{
 		Arrays.fill(spectrumMaxHold, spectrumInitPower);
+		Arrays.fill(maxHoldUpdateTime, System.currentTimeMillis());
 	}
 	
 	public void resetAverage()

@@ -61,11 +61,35 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         frameConsumers.add(consumer);
     }
 
+    /**
+     * Bring the engine online but do <strong>not</strong> start streaming.
+     * The user is expected to flip {@code settings.isRunningRequested()} to
+     * {@code true} via the UI Start/Stop toggle - the listener wired below
+     * will then call {@link #restartSweep()}. This guarantees the app boots
+     * without grabbing the radio (so device selection works first).
+     */
     public void start() {
         startLauncherThread();
         wireSettingsObservers();
-        restartSweep();
+        wireRunStateObserver();
+        wireMaxHoldDecayObserver();
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "SpectrumEngine-shutdown"));
+    }
+
+    /**
+     * Push the user-configured max-hold lifetime straight to the dataset
+     * without restarting the sweep. The dataset's setter is volatile and
+     * the processing thread re-reads it once per sweep, so changes apply
+     * within one frame of the next paint.
+     */
+    private void wireMaxHoldDecayObserver() {
+        Runnable apply = () -> {
+            DatasetSpectrumPeak ds = datasetSpectrum;
+            if (ds != null) {
+                ds.setMaxHoldFalloutMillis(settings.getMaxHoldDecaySeconds().getValue() * 1000L);
+            }
+        };
+        settings.getMaxHoldDecaySeconds().addListener(apply);
     }
 
     public void shutdown() {
@@ -105,20 +129,45 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     }
 
     private void wireSettingsObservers() {
-        Runnable restart = this::restartSweep;
-        settings.getFrequency().addListener(restart);
-        settings.getFFTBinHz().addListener(restart);
-        settings.getSamples().addListener(restart);
-        settings.getGainLNA().addListener(restart);
-        settings.getGainVGA().addListener(restart);
-        settings.getAntennaPowerEnable().addListener(restart);
-        settings.getAntennaLNA().addListener(restart);
-        settings.getAvgIterations().addListener(restart);
-        settings.getLogDetail().addListener(restart);
-        settings.getVideoArea().addListener(restart);
-        settings.getVideoFormat().addListener(restart);
-        settings.getVideoResolution().addListener(restart);
-        settings.getVideoFrameRate().addListener(restart);
+        // Per the agreed UX: while STOPPED, settings changes do nothing
+        // (the user can adjust freely without grabbing the radio); while
+        // RUNNING, they restart the sweep just like the legacy behaviour.
+        Runnable restartIfRunning = this::restartSweepIfRunning;
+        settings.getFrequency().addListener(restartIfRunning);
+        settings.getFFTBinHz().addListener(restartIfRunning);
+        settings.getSamples().addListener(restartIfRunning);
+        settings.getGainLNA().addListener(restartIfRunning);
+        settings.getGainVGA().addListener(restartIfRunning);
+        settings.getAntennaPowerEnable().addListener(restartIfRunning);
+        settings.getAntennaLNA().addListener(restartIfRunning);
+        settings.getAvgIterations().addListener(restartIfRunning);
+        settings.getLogDetail().addListener(restartIfRunning);
+        settings.getVideoArea().addListener(restartIfRunning);
+        settings.getVideoFormat().addListener(restartIfRunning);
+        settings.getVideoResolution().addListener(restartIfRunning);
+        settings.getVideoFrameRate().addListener(restartIfRunning);
+
+        // Picking a different physical device requires fully re-opening
+        // libhackrf, which is exactly what restartSweep() does anyway.
+        settings.getSelectedSerial().addListener(restartIfRunning);
+    }
+
+    /**
+     * Bridges the {@code runningRequested} model bool to the actual
+     * sweep lifecycle. The model owns the truth ("is the user asking us to
+     * stream?"); the engine simply queues a reconcile-to-state request on
+     * the launcher thread so the FX thread never blocks on
+     * {@link #stopSweep()} (which can take seconds when waiting for the
+     * native side to shut down).
+     */
+    private void wireRunStateObserver() {
+        settings.isRunningRequested().addListener(this::requestReconcile);
+    }
+
+    private void restartSweepIfRunning() {
+        if (settings.isRunningRequested().getValue()) {
+            requestReconcile();
+        }
     }
 
     private void startLauncherThread() {
@@ -127,7 +176,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
             while (!shuttingDown) {
                 try {
                     launchCommands.take();
-                    restartSweepExecute();
+                    reconcileToRunningRequested();
                 } catch (InterruptedException e) {
                     return;
                 } catch (Exception e) {
@@ -140,13 +189,35 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     }
 
     /**
-     * Queue a restart request. Repeated calls are coalesced so only the latest request
-     * is honoured.
+     * Queue a reconcile request: the launcher thread will read
+     * {@code settings.isRunningRequested()} and either (re)start or stop
+     * the sweep accordingly. Repeated calls are coalesced - only the latest
+     * request is honoured, so spamming Stop or rapid setting changes can
+     * never queue up multiple worker restarts.
      */
-    public synchronized void restartSweep() {
+    public synchronized void requestReconcile() {
         if (!launchCommands.offer(0)) {
             launchCommands.clear();
             launchCommands.offer(0);
+        }
+    }
+
+    /** Backwards-compatible alias used by callers that meant "restart". */
+    public synchronized void restartSweep() {
+        requestReconcile();
+    }
+
+    /**
+     * Runs on the launcher thread. Brings the sweep into the state the model
+     * asks for - blocking I/O (native shutdown, thread joins) happens here,
+     * never on the FX thread.
+     */
+    private void reconcileToRunningRequested() {
+        if (settings.isRunningRequested().getValue()) {
+            restartSweepExecute();
+        } else {
+            stopSweep();
+            fireHardwareStateChanged(false);
         }
     }
 
@@ -236,7 +307,8 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                         settings.getGainLNA().getValue(),
                         settings.getGainVGA().getValue(),
                         settings.getAntennaPowerEnable().getValue(),
-                        settings.getAntennaLNA().getValue());
+                        settings.getAntennaLNA().getValue(),
+                        settings.getSelectedSerial().getValue());
                 long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
                 fireHardwareStateChanged(false);
 
@@ -285,6 +357,11 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                 settings.getFreqShift().getValue(),
                 settings.getAvgIterations().getValue(),
                 settings.getAvgOffset().getValue());
+        // Apply the current decay setting straight away so the very first
+        // sweep after restart respects the user's choice (otherwise the
+        // dataset would default to "infinite hold" until the next change).
+        datasetSpectrum.setMaxHoldFalloutMillis(
+                settings.getMaxHoldDecaySeconds().getValue() * 1000L);
 
         float maxPeakJitterdB = 6;
         float peakThresholdAboveNoise = 4;

@@ -234,10 +234,14 @@ public class PersistentDisplay {
 		if (width < 1 || height < 1)
 			return;
 
+		BufferedImage current = displayImage.getValue();
+		if (current != null && current.getWidth() == width && current.getHeight() == height) {
+			return;
+		}
+
 		calibrated = false;
 		calibrating = false;
 
-		System.out.println("Persistent image set to " + width + "x" + height);
 		displayImage.setValue(GraphicsToolkit.createAcceleratedImageOpaque(width, height));
 		imagePowerAccumulated = new FloatImage(width, height);
 	}

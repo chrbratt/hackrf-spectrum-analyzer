@@ -357,6 +357,146 @@ static int rx_callback(hackrf_transfer* transfer)
 
 static hackrf_device* device = NULL;
 
+/* ------------------------------------------------------------------ */
+/* Device metadata helpers (used by list_devices + get_opened_info).  */
+/* ------------------------------------------------------------------ */
+
+/* Cached info about the device currently held open by start().
+ * Cleared on stop / on any open failure. */
+static hackrf_sweep_device_info_t opened_info;
+static bool opened_info_valid = false;
+
+/*
+ * Compose a friendly label for the device given what we know.
+ *
+ * Pre-open we only have the USB board id, so "HackRF One"/"Jawbreaker"/
+ * "rad1o". After hackrf_board_id_read() succeeds we also have the
+ * firmware id, which distinguishes "HackRF One OG" from "HackRF One r9"
+ * and from "Praline (HackRF Pro)".
+ */
+static void compose_board_name(
+	char* out,
+	size_t out_size,
+	enum hackrf_usb_board_id usb_id,
+	int firmware_id /* -1 if not yet read */)
+{
+	const char* usb_name = hackrf_usb_board_id_name(usb_id);
+	if (!usb_name) {
+		usb_name = "Unknown";
+	}
+
+	if (firmware_id < 0) {
+		snprintf(out, out_size, "%s", usb_name);
+		return;
+	}
+
+	const char* refined = NULL;
+	switch ((enum hackrf_board_id) firmware_id) {
+	case BOARD_ID_PRALINE:
+		refined = "Praline (HackRF Pro)";
+		break;
+	case BOARD_ID_HACKRF1_R9:
+		refined = "HackRF One r9";
+		break;
+	case BOARD_ID_HACKRF1_OG:
+		refined = "HackRF One OG";
+		break;
+	case BOARD_ID_JAWBREAKER:
+		refined = "Jawbreaker";
+		break;
+	case BOARD_ID_RAD1O:
+		refined = "rad1o";
+		break;
+	default:
+		break;
+	}
+
+	if (refined) {
+		snprintf(out, out_size, "%s", refined);
+	} else {
+		snprintf(out, out_size, "%s (board id %d)", usb_name, firmware_id);
+	}
+}
+
+static void copy_serial(char* out, size_t out_size, const char* src)
+{
+	if (out_size == 0) {
+		return;
+	}
+	if (src == NULL) {
+		out[0] = '\0';
+		return;
+	}
+	size_t n = strlen(src);
+	if (n >= out_size) {
+		n = out_size - 1;
+	}
+	memcpy(out, src, n);
+	out[n] = '\0';
+}
+
+int HSCALL hackrf_sweep_lib_list_devices(
+	hackrf_sweep_device_info_t* out_entries,
+	int max_entries)
+{
+	if (max_entries < 0) {
+		return -1;
+	}
+
+	int init_result = hackrf_init();
+	if (init_result != HACKRF_SUCCESS) {
+		fprintf(stderr,
+			"hackrf_sweep_lib_list_devices: hackrf_init() failed: "
+			"%s (%d)\n",
+			hackrf_error_name(init_result),
+			init_result);
+		return -1;
+	}
+
+	hackrf_device_list_t* list = hackrf_device_list();
+	if (!list) {
+		hackrf_exit();
+		return -1;
+	}
+
+	int total = list->devicecount;
+	int copy_count = total < max_entries ? total : max_entries;
+	for (int i = 0; i < copy_count && out_entries; i++) {
+		hackrf_sweep_device_info_t* slot = &out_entries[i];
+		memset(slot, 0, sizeof(*slot));
+		copy_serial(slot->serial, sizeof(slot->serial),
+			list->serial_numbers ? list->serial_numbers[i] : NULL);
+		enum hackrf_usb_board_id usb_id = list->usb_board_ids
+			? list->usb_board_ids[i]
+			: USB_BOARD_ID_INVALID;
+		slot->usb_board_id = (uint32_t) usb_id;
+		slot->board_id = HACKRF_SWEEP_BOARD_ID_UNKNOWN;
+		compose_board_name(
+			slot->board_name,
+			sizeof(slot->board_name),
+			usb_id,
+			-1);
+	}
+
+	hackrf_device_list_free(list);
+	hackrf_exit();
+	return total;
+}
+
+int HSCALL hackrf_sweep_lib_get_opened_info(
+	hackrf_sweep_device_info_t* out_info)
+{
+	if (!out_info) {
+		return 0;
+	}
+	if (!opened_info_valid) {
+		memset(out_info, 0, sizeof(*out_info));
+		return 0;
+	}
+	*out_info = opened_info;
+	return 1;
+}
+
 void HSCALL hackrf_sweep_lib_stop(void)
 {
 	do_exit = true;
@@ -376,7 +516,8 @@ int HSCALL hackrf_sweep_lib_start(
 	unsigned int lna_gain,
 	unsigned int vga_gain,
 	unsigned int _antennaPowerEnable,
-	unsigned int _enableAntennaLNA)
+	unsigned int _enableAntennaLNA,
+	const char*  serial)
 {
 	int i, result = 0;
 	int exit_code = EXIT_SUCCESS;
@@ -530,13 +671,48 @@ int HSCALL hackrf_sweep_lib_start(
 		return EXIT_FAILURE;
 	}
 
-	result = hackrf_open_by_serial(NULL, &device);
+	/* Empty string means "first available" too, mirroring how the Java
+	 * side defaults to "" when no specific device has been picked. */
+	const char* desired_serial = (serial && serial[0] != '\0') ? serial : NULL;
+	result = hackrf_open_by_serial(desired_serial, &device);
 	if (result != HACKRF_SUCCESS) {
 		fprintf(stderr,
-			"hackrf_open() failed: %s (%d)\n",
+			"hackrf_open() failed: %s (%d)%s%s\n",
 			hackrf_error_name(result),
-			result);
+			result,
+			desired_serial ? " for serial " : "",
+			desired_serial ? desired_serial : "");
+		opened_info_valid = false;
 		return EXIT_FAILURE;
+	}
+
+	/* Cache device metadata so the UI can show what was actually opened.
+	 * board_id_read can fail on hot-replug edge cases; in that case we
+	 * still publish the serial and USB id with board_id = UNKNOWN. */
+	{
+		uint8_t board_id_raw = (uint8_t) HACKRF_SWEEP_BOARD_ID_UNKNOWN;
+		int board_id_result = hackrf_board_id_read(device, &board_id_raw);
+		int firmware_id = (board_id_result == HACKRF_SUCCESS)
+			? (int) board_id_raw
+			: -1;
+
+		memset(&opened_info, 0, sizeof(opened_info));
+		copy_serial(opened_info.serial,
+			sizeof(opened_info.serial),
+			desired_serial);
+		/* If the user passed NULL we don't yet know the serial of the
+		 * device libhackrf picked. Leave it empty - get_opened_info()
+		 * will still report the board name correctly. */
+		opened_info.usb_board_id = (uint32_t) USB_BOARD_ID_HACKRF_ONE;
+		opened_info.board_id = (firmware_id < 0)
+			? HACKRF_SWEEP_BOARD_ID_UNKNOWN
+			: (uint32_t) firmware_id;
+		compose_board_name(
+			opened_info.board_name,
+			sizeof(opened_info.board_name),
+			USB_BOARD_ID_HACKRF_ONE,
+			firmware_id);
+		opened_info_valid = true;
 	}
 
 	outfile = stdout; /* sentinel only - rx_callback never writes */
@@ -709,6 +885,7 @@ int HSCALL hackrf_sweep_lib_start(
 		hackrf_exit();
 		fprintf(stderr, "hackrf_exit() done\n");
 		device = NULL;
+		opened_info_valid = false;
 	}
 
 	outfile = NULL;

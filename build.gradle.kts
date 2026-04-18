@@ -96,21 +96,14 @@ dependencies {
 
 // The MSVC build (see src/hackrf-sweep/native/CMakeLists.txt + BUILD_NATIVE.md)
 // stages all four runtime DLLs (hackrf-sweep, fftw3f, libusb-1.0, pthreadVC3)
-// into build/native/dist. Prefer that location when present so a freshly
-// built DLL gets picked up automatically; otherwise fall back to the
-// pre-built MinGW DLLs that ship in the repo.
+// into build/native/dist. With HackRF Pro support the DLL ABI changed
+// (hackrf_sweep_lib_list_devices / get_opened_info / start with serial
+// parameter), so the legacy MinGW DLL is no longer ABI-compatible and the
+// fallback was dropped - run `gradlew buildHackrfSweepDll` first if the
+// folder is empty.
 val msvcNativeDir = layout.buildDirectory.dir("native/dist").get().asFile
-val legacyNativeDir = file("src/hackrf-sweep/lib/win32-x86-64")
-val nativeLibDir: String =
-    if (msvcNativeDir.resolve("hackrf-sweep.dll").exists())
-        msvcNativeDir.absolutePath
-    else
-        legacyNativeDir.absolutePath
-val nativeLibSourceDir: File =
-    if (msvcNativeDir.resolve("hackrf-sweep.dll").exists())
-        msvcNativeDir
-    else
-        legacyNativeDir
+val nativeLibDir: String = msvcNativeDir.absolutePath
+val nativeLibSourceDir: File = msvcNativeDir
 
 application {
     // Main wraps FxApp so jpackage (which puts JavaFX on the classpath, not the

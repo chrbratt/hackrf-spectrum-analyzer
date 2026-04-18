@@ -63,6 +63,14 @@ public interface HackRFSettings {
 	public ModelValueInt getPeakFallTrs();
 	
 	public ModelValueInt getPeakHoldTime();
+
+	/**
+	 * Per-bin lifetime for the max-hold trace, in seconds.
+	 * 0 means "hold forever" (legacy behaviour); any positive value lets each
+	 * bin reset to the current sample once it has not been beaten for this many
+	 * seconds.
+	 */
+	public ModelValueInt getMaxHoldDecaySeconds();
 	
 	public ModelValueInt getAvgIterations();
 	

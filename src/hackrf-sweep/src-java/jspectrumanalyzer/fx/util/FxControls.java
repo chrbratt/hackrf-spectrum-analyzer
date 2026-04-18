@@ -101,6 +101,12 @@ public final class FxControls {
 
     public static CheckBox checkBox(String text, ModelValueBoolean model) {
         CheckBox box = new CheckBox(text);
+        // Push the model's current state into the new control BEFORE wiring
+        // listeners. {@link FxModelBinder#bindBoolean} only attaches change
+        // listeners; it does not seed the initial value, so without this
+        // every checkbox would render unchecked even when the underlying
+        // setting is true.
+        box.setSelected(model.getValue());
         FxModelBinder.bindBoolean(box.selectedProperty(), model);
         return box;
     }

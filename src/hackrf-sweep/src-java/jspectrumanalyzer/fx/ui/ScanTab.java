@@ -47,6 +47,7 @@ public final class ScanTab extends ScrollPane {
         VBox content = new VBox(12);
         content.setPadding(new Insets(12));
         content.getChildren().addAll(
+                FxControls.section("Device", new DeviceSection(settings)),
                 FxControls.section("Frequency", rangeSelector, buildPanBar()),
                 FxControls.section("Resolution",
                         labeled("RBW [kHz]",

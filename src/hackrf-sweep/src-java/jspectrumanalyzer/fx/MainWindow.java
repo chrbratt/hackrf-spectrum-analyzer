@@ -33,6 +33,8 @@ import jspectrumanalyzer.fx.ui.DisplayTab;
 import jspectrumanalyzer.fx.ui.ParamsTab;
 import jspectrumanalyzer.fx.ui.RecordingTab;
 import jspectrumanalyzer.fx.ui.ScanTab;
+import jspectrumanalyzer.nativebridge.HackRFDeviceInfo;
+import jspectrumanalyzer.nativebridge.HackRFSweepNativeBridge;
 
 /**
  * Main JavaFX window wiring together settings, chart, waterfall, persistent display,
@@ -50,7 +52,7 @@ public final class MainWindow {
     private final WaterfallCanvas waterfall;
     private final PersistentDisplayController persistent;
 
-    private final Label hardwareStatus = new Label("HW disconnected");
+    private final Label hardwareStatus = new Label("Stopped");
     private final Label peakLabel = new Label("");
     private final Label totalPowerLabel = new Label("");
 
@@ -79,12 +81,33 @@ public final class MainWindow {
             @Override
             public void hardwareStatusChanged(boolean sending) {
                 Platform.runLater(() -> {
-                    hardwareStatus.setText(sending ? "HW sending data" : "HW idle");
+                    if (sending) {
+                        // Surface the actual board name (e.g. PRALINE = HackRF
+                        // Pro) once libhackrf has populated it; falls back to
+                        // a generic label if the read failed.
+                        HackRFDeviceInfo info = safeGetOpenedInfo();
+                        String label = (info != null)
+                                ? "HW: " + info.boardName()
+                                : "HW sending data";
+                        hardwareStatus.setText(label);
+                    } else {
+                        hardwareStatus.setText(settings.isRunningRequested().getValue()
+                                ? "HW idle (waiting for device)"
+                                : "Stopped");
+                    }
                     hardwareStatus.pseudoClassStateChanged(
                             javafx.css.PseudoClass.getPseudoClass("connected"), sending);
                 });
             }
         });
+
+        settings.isRunningRequested().addListener(() -> Platform.runLater(() -> {
+            if (!settings.isRunningRequested().getValue()) {
+                hardwareStatus.setText("Stopped");
+                hardwareStatus.pseudoClassStateChanged(
+                        javafx.css.PseudoClass.getPseudoClass("connected"), false);
+            }
+        }));
 
         settings.getSpectrumPaletteStart().addListener(() ->
                 waterfall.setSpectrumPaletteStart(settings.getSpectrumPaletteStart().getValue()));
@@ -211,6 +234,14 @@ public final class MainWindow {
                 e.consume();
             }
         });
+    }
+
+    private static HackRFDeviceInfo safeGetOpenedInfo() {
+        try {
+            return HackRFSweepNativeBridge.getOpenedInfo();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private void onChartDataAreaChanged(Rectangle2D area) {
