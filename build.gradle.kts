@@ -1,4 +1,8 @@
-import org.gradle.internal.os.OperatingSystem
+// Note: we deliberately avoid `org.gradle.internal.os.OperatingSystem` (an
+// internal Gradle API that has shifted package between releases) and check
+// the JVM-supplied `os.name` instead. Same answer, no internal-API warnings.
+fun isWindows(): Boolean =
+    System.getProperty("os.name").lowercase().startsWith("windows")
 
 plugins {
     application
@@ -23,10 +27,6 @@ sourceSets {
     main {
         java {
             srcDirs("src/hackrf-sweep/src-java")
-            // capture/* depends on Xuggler (no longer on the classpath). Rewriting the
-            // recording pipeline is out of scope; the sources are kept for reference
-            // and excluded from compilation until a JavaFX-native replacement lands.
-            exclude("jspectrumanalyzer/capture/**")
         }
         resources {
             // Three roots, all flattened onto the classpath:
@@ -40,7 +40,7 @@ sourceSets {
                 layout.buildDirectory.dir("generated-resources")
             )
             include("**/*.csv", "**/*.css", "**/*.png", "**/*.ico", "**/*.txt")
-            exclude("src-java/**", "lib/**", "capture/**")
+            exclude("src-java/**", "lib/**")
         }
     }
     test {
@@ -86,8 +86,11 @@ dependencies {
     implementation("org.controlsfx:controlsfx:11.2.1")
     implementation("net.java.dev.jna:jna:5.14.0")
 
-    // slf4j binding needed by a few core utils. The legacy Swing code (compiled by Ant)
-    // pulls in its own MigLayout + Xuggler jars from src/hackrf-sweep/lib.
+    // SLF4J on the compile classpath; logback supplies the runtime binding.
+    // The application code uses LoggerFactory directly (engine, recorder,
+    // device enumeration), so we need the API jar at compile time and not
+    // just as a transitive of logback.
+    implementation("org.slf4j:slf4j-api:2.0.13")
     runtimeOnly("ch.qos.logback:logback-classic:1.5.6")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
@@ -244,7 +247,7 @@ val cmakeExe: String by lazy {
 val configureHackrfSweepDll by tasks.registering(Exec::class) {
     group = "native"
     description = "Run cmake configure for the hackrf-sweep MSVC build."
-    onlyIf { OperatingSystem.current().isWindows }
+    onlyIf { isWindows() }
     doFirst {
         nativeBuildDir.mkdirs()
         val srcCheck = file("$hackrfSourceDir/host/libhackrf/src/hackrf.c")
@@ -274,7 +277,7 @@ val configureHackrfSweepDll by tasks.registering(Exec::class) {
 tasks.register<Exec>("buildHackrfSweepDll") {
     group = "native"
     description = "Build hackrf-sweep.dll (and its runtime DLLs) with MSVC."
-    onlyIf { OperatingSystem.current().isWindows }
+    onlyIf { isWindows() }
     dependsOn(configureHackrfSweepDll)
     commandLine = listOf(
         cmakeExe,
@@ -292,7 +295,7 @@ tasks.register<Exec>("jpackageWinApp") {
     group = "distribution"
     description = "Produce a self-contained Windows app-image (folder, no installer)."
     dependsOn("stageJpackageInput")
-    onlyIf { OperatingSystem.current().isWindows }
+    onlyIf { isWindows() }
     doFirst { layout.buildDirectory.dir("jpackage").get().asFile.mkdirs() }
     // --win-console keeps a console window attached so stdout/stderr (and any
     // startup errors) are visible. Drop the flag for a "clean" release build.
@@ -303,7 +306,7 @@ tasks.register<Exec>("jpackageWinMsi") {
     group = "distribution"
     description = "Produce a Windows MSI via jpackage (requires WiX Toolset on PATH)."
     dependsOn("stageJpackageInput")
-    onlyIf { OperatingSystem.current().isWindows }
+    onlyIf { isWindows() }
     doFirst { layout.buildDirectory.dir("jpackage").get().asFile.mkdirs() }
     commandLine = jpackageCommand("msi")
 }

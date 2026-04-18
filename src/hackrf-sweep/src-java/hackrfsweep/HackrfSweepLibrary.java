@@ -74,6 +74,27 @@ public class HackrfSweepLibrary implements Library {
             int enableAntennaLNA,
             String serial);
 
+    /**
+     * Multi-range sweep entry point. {@code range_pairs} must be a contiguous
+     * native buffer of {@code 2 * num_ranges} {@code uint16_t} values laid
+     * out as {@code [start0, end0, start1, end1, ...]} in MHz, ascending and
+     * non-overlapping. Allocate it via JNA {@code Memory} and let the wrapper
+     * write the shorts in little-endian order (libhackrf reads them as plain
+     * uint16, host endianness is fine because the shorts originate on the
+     * same machine).
+     */
+    public static native int hackrf_sweep_lib_start_multi(
+            HackrfSweepLibrary.hackrf_sweep_lib_start__fft_power_callback_callback fft_power_callback,
+            int num_ranges,
+            Pointer range_pairs,
+            int fft_bin_width,
+            int num_samples,
+            int lna_gain,
+            int vga_gain,
+            int antennaPowerEnable,
+            int enableAntennaLNA,
+            String serial);
+
     public static native void hackrf_sweep_lib_stop();
 
     /**
@@ -110,6 +131,7 @@ public class HackrfSweepLibrary implements Library {
     public static List<String> exportedSymbols() {
         return Arrays.asList(
                 "hackrf_sweep_lib_start",
+                "hackrf_sweep_lib_start_multi",
                 "hackrf_sweep_lib_stop",
                 "hackrf_sweep_lib_list_devices",
                 "hackrf_sweep_lib_get_opened_info");

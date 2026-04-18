@@ -5,7 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import jspectrumanalyzer.core.FrequencyAllocationTable;
-import jspectrumanalyzer.core.FrequencyAllocations;
+import jspectrumanalyzer.core.FrequencyPlan;
 import jspectrumanalyzer.core.FrequencyRange;
 import jspectrumanalyzer.core.HackRFSettings;
 import shared.mvc.ModelValue;
@@ -34,13 +34,24 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValueBoolean filterSpectrum = new ModelValueBoolean("Filter", false);
     private final ModelValue<FrequencyRange> frequency =
             new ModelValue<>("Frequency Range", new FrequencyRange(2400, 2483));
+    // Multi-segment plan. null means "use the single-range `frequency` field"
+    // and is the default - keeps every existing single-range UI control
+    // working without modification. When the user picks a multi-range preset
+    // this is set to a non-null FrequencyPlan and the engine sweeps every
+    // segment in one hackrf_init_sweep call.
+    private final ModelValue<FrequencyPlan> frequencyPlan =
+            new ModelValue<>("Frequency Plan", null);
     private final ModelValue<FrequencyAllocationTable> frequencyAllocationTable =
-            new ModelValue<>("Frequency Allocation Table", loadDefaultAllocationTable());
+            new ModelValue<>("Frequency Allocation Table", null);
+    // Overlay (colored bands + labels above the chart) is OFF by default so
+    // first-time users see the raw spectrum and so we don't load + render a
+    // table they haven't opted into. Toggle + country picker live in the
+    // Display tab.
+    private final ModelValueBoolean frequencyAllocationVisible =
+            new ModelValueBoolean("Allocation Overlay", false);
     private final ModelValueInt gainLNA = new ModelValueInt("LNA Gain", 24, 8, 0, 40);
-    private final ModelValueInt gainTotal = new ModelValueInt("Gain", 52);
     private final ModelValueInt gainVGA = new ModelValueInt("VGA Gain", 8, 2, 0, 62);
     private final ModelValueBoolean isCapturingPaused = new ModelValueBoolean("Capturing Paused", false);
-    private final ModelValueBoolean isRecordedVideo = new ModelValueBoolean("Recording Video", false);
     private final ModelValueBoolean isRecordedData = new ModelValueBoolean("Recording Data", false);
     private final ModelValueInt persistentDisplayDecayRate =
             new ModelValueInt("Persistence Time", 5);
@@ -99,18 +110,19 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValue<String> selectedSerial = new ModelValue<>("Selected Serial", "");
     private final ModelValueBoolean runningRequested =
             new ModelValueBoolean("Sweep Running", false);
-    private final ModelValue<String> logDetail = new ModelValue<>("Data Log Interval", "SEC");
-    private final ModelValue<String> videoArea = new ModelValue<>("Video Area", "SPEC");
-    private final ModelValue<String> videoFormat = new ModelValue<>("Video Format", "GIF");
-    private final ModelValueInt videoResolution = new ModelValueInt("Video Resolution", 540);
-    private final ModelValueInt videoFrameRate = new ModelValueInt("Video Framerate", 15);
 
     private final List<HackRFEventListener> listeners = new ArrayList<>();
+
+    // No constructor side-effects. The previous version auto-cleared the
+    // multi-range plan when `frequency` changed, which was too aggressive:
+    // selecting a multi-range preset typically wants to keep the legacy
+    // single-range value untouched as a "remembered" fallback. The user
+    // turns multi-range off explicitly via the combo's "Off" entry, which
+    // sets `frequencyPlan` back to null.
 
     @Override public ModelValueBoolean getAntennaPowerEnable() { return antennaPower; }
     @Override public ModelValueInt getFFTBinHz() { return fftBinHz; }
     @Override public ModelValue<FrequencyRange> getFrequency() { return frequency; }
-    @Override public ModelValueInt getGain() { return gainTotal; }
     @Override public ModelValueInt getGainLNA() { return gainLNA; }
     @Override public ModelValueBoolean getAntennaLNA() { return antennaLNA; }
     @Override public ModelValueInt getPersistentDisplayDecayRate() { return persistentDisplayDecayRate; }
@@ -133,14 +145,8 @@ public class SettingsStore implements HackRFSettings {
     @Override public ModelValueInt getPowerFluxCal() { return powerFluxCal; }
     @Override public ModelValue<FrequencyAllocationTable> getFrequencyAllocationTable() { return frequencyAllocationTable; }
     @Override public ModelValue<BigDecimal> getSpectrumLineThickness() { return spectrumLineThickness; }
-    @Override public ModelValue<String> getLogDetail() { return logDetail; }
-    @Override public ModelValue<String> getVideoArea() { return videoArea; }
-    @Override public ModelValue<String> getVideoFormat() { return videoFormat; }
-    @Override public ModelValueInt getVideoResolution() { return videoResolution; }
-    @Override public ModelValueInt getVideoFrameRate() { return videoFrameRate; }
     @Override public ModelValueInt getGainVGA() { return gainVGA; }
     @Override public ModelValueBoolean isCapturingPaused() { return isCapturingPaused; }
-    @Override public ModelValueBoolean isRecordedVideo() { return isRecordedVideo; }
     @Override public ModelValueBoolean isRecordedData() { return isRecordedData; }
     @Override public ModelValueBoolean isChartsRealtimeVisible() { return showRealtime; }
     @Override public ModelValueBoolean isChartsAverageVisible() { return showAverage; }
@@ -153,6 +159,20 @@ public class SettingsStore implements HackRFSettings {
 
     public ModelValue<String> getSelectedSerial() { return selectedSerial; }
     public ModelValueBoolean isRunningRequested() { return runningRequested; }
+    public ModelValue<FrequencyPlan> getFrequencyPlan() { return frequencyPlan; }
+    public ModelValueBoolean isFrequencyAllocationVisible() { return frequencyAllocationVisible; }
+
+    /**
+     * Return the effective frequency plan for the engine. Reads
+     * {@link #frequencyPlan} first; falls back to a single-segment plan
+     * derived from {@link #frequency} when no multi-range plan is selected.
+     * Always non-null.
+     */
+    public FrequencyPlan getEffectivePlan() {
+        FrequencyPlan p = frequencyPlan.getValue();
+        if (p != null) return p;
+        return FrequencyPlan.single(frequency.getValue());
+    }
 
     @Override
     public synchronized void registerListener(HackRFEventListener listener) {
@@ -168,12 +188,4 @@ public class SettingsStore implements HackRFSettings {
         return new ArrayList<>(listeners);
     }
 
-    private static FrequencyAllocationTable loadDefaultAllocationTable() {
-        try {
-            return new FrequencyAllocations().getTable().get("- Slovakia.csv");
-        } catch (Exception e) {
-            System.err.println("SettingsStore: no default frequency allocation table: " + e);
-            return null;
-        }
-    }
 }

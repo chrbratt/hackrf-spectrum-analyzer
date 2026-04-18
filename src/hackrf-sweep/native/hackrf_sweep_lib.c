@@ -519,6 +519,42 @@ int HSCALL hackrf_sweep_lib_start(
 	unsigned int _enableAntennaLNA,
 	const char*  serial)
 {
+	/* Legacy single-range entry point: forward to the multi-range
+	 * implementation with a one-element pair array. Keeps existing JNA
+	 * callers working without recompilation. */
+	uint16_t pair[2];
+	pair[0] = (uint16_t) freq_min;
+	pair[1] = (uint16_t) freq_max;
+	return hackrf_sweep_lib_start_multi(
+		_fft_power_callback,
+		1,
+		pair,
+		_fft_bin_width,
+		num_samples,
+		lna_gain,
+		vga_gain,
+		_antennaPowerEnable,
+		_enableAntennaLNA,
+		serial);
+}
+
+int HSCALL hackrf_sweep_lib_start_multi(
+	void (*_fft_power_callback)(
+		char     full_sweep_done,
+		int      bins,
+		double*  freqStart,
+		float    fft_bin_Hz,
+		float*   powerdBm),
+	int          _num_ranges,
+	const uint16_t* range_pairs,
+	uint32_t _fft_bin_width,
+	uint32_t num_samples,
+	unsigned int lna_gain,
+	unsigned int vga_gain,
+	unsigned int _antennaPowerEnable,
+	unsigned int _enableAntennaLNA,
+	const char*  serial)
+{
 	int i, result = 0;
 	int exit_code = EXIT_SUCCESS;
 	struct timeval time_now;
@@ -548,26 +584,47 @@ int HSCALL hackrf_sweep_lib_start(
 	}
 	fft_power_callback = _fft_power_callback;
 
-	if (freq_min >= freq_max) {
+	if (_num_ranges < 1 || _num_ranges > MAX_SWEEP_RANGES) {
 		fprintf(stderr,
-			"argument error: freq_max must be greater than freq_min.\n");
-		return EXIT_FAILURE;
-	}
-	if (FREQ_MAX_MHZ < freq_max) {
-		fprintf(stderr,
-			"argument error: freq_max may not be higher than %u.\n",
-			FREQ_MAX_MHZ);
-		return EXIT_FAILURE;
-	}
-	if (MAX_SWEEP_RANGES <= num_ranges) {
-		fprintf(stderr,
-			"argument error: specify a maximum of %u frequency ranges.\n",
+			"argument error: num_ranges must be between 1 and %u.\n",
 			MAX_SWEEP_RANGES);
 		return EXIT_FAILURE;
 	}
-	frequencies[2 * num_ranges]     = (uint16_t) freq_min;
-	frequencies[2 * num_ranges + 1] = (uint16_t) freq_max;
-	num_ranges++;
+	if (range_pairs == NULL) {
+		fprintf(stderr, "argument error: range_pairs pointer NULL.\n");
+		return EXIT_FAILURE;
+	}
+
+	/* Validate every pair before touching device state. Bail out early on
+	 * the first error so the caller gets a single, deterministic message
+	 * rather than a half-configured sweep. Ranges must be ascending and
+	 * non-overlapping (libhackrf requires this for hackrf_init_sweep). */
+	for (i = 0; i < _num_ranges; i++) {
+		uint16_t lo = range_pairs[2 * i];
+		uint16_t hi = range_pairs[2 * i + 1];
+		if (lo >= hi) {
+			fprintf(stderr,
+				"argument error: range %d: end (%u) must be greater than start (%u).\n",
+				i, hi, lo);
+			return EXIT_FAILURE;
+		}
+		if (FREQ_MAX_MHZ < hi) {
+			fprintf(stderr,
+				"argument error: range %d end (%u) above %u MHz.\n",
+				i, hi, FREQ_MAX_MHZ);
+			return EXIT_FAILURE;
+		}
+		if (i > 0 && lo < range_pairs[2 * (i - 1) + 1]) {
+			fprintf(stderr,
+				"argument error: range %d (%u..%u) overlaps previous range (%u..%u).\n",
+				i, lo, hi,
+				range_pairs[2 * (i - 1)], range_pairs[2 * (i - 1) + 1]);
+			return EXIT_FAILURE;
+		}
+		frequencies[2 * num_ranges]     = lo;
+		frequencies[2 * num_ranges + 1] = hi;
+		num_ranges++;
+	}
 
 	(void) num_samples; /* upstream constant - kept for ABI compat */
 	num_fft_bins = DEFAULT_SAMPLE_RATE_HZ / _fft_bin_width;

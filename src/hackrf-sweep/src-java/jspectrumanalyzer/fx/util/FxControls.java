@@ -117,6 +117,21 @@ public final class FxControls {
         return label;
     }
 
+    /**
+     * Caption-on-top + control combo with proper accessibility wiring:
+     * the {@link Label#setLabelFor(Node)} link makes assistive tech (and
+     * mnemonic Alt-shortcuts) treat the label as describing the control,
+     * which the duplicated {@code new VBox(2, new Label(...), control)}
+     * pattern scattered through the legacy code did not. Returns a VBox
+     * so the call sites read as declaratively as before.
+     */
+    public static VBox labeled(String caption, Node control) {
+        Label label = new Label(caption);
+        label.setLabelFor(control);
+        VBox box = new VBox(2, label, control);
+        return box;
+    }
+
     public static VBox section(String title, Node... children) {
         VBox box = new VBox(6);
         box.setPadding(new Insets(4, 0, 8, 0));

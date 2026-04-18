@@ -8,9 +8,9 @@
     -fx-base: #1b1b1b;
     -fx-background: #121212;
     -fx-control-inner-background: #1e1e1e;
-    -fx-accent: #11ff11;
-    -fx-focus-color: #11ff11;
-    -fx-faint-focus-color: #11ff1133;
+    -fx-accent: #5BE572;
+    -fx-focus-color: #5BE572;
+    -fx-faint-focus-color: #5BE57233;
     -fx-text-base-color: #f0f0f0;
     -fx-text-inner-color: #f0f0f0;
     -fx-text-background-color: #f0f0f0;
@@ -181,7 +181,10 @@
 }
 
 .status-bar .status-peak {
-    -fx-text-fill: -fx-accent;
+    -fx-text-fill: #0a0a10;
+    -fx-background-color: -fx-accent;
+    -fx-background-radius: 10;
+    -fx-padding: 1 10 1 10;
     -fx-font-weight: bold;
 }
 
@@ -222,7 +225,30 @@
 
 .spectrum-chart,
 .waterfall-canvas {
-    -fx-background-color: #000000;
+    -fx-background-color: #0A0A10;
+}
+
+/* Compact, semi-transparent series legend pinned to the chart's top-right.
+ * The HBox itself is invisible (no background) so only the chips show; each
+ * chip has its own pill background to stay readable against any chart
+ * content (peaks / waterfall colours / allocation overlay). */
+.legend-overlay {
+    -fx-background-color: transparent;
+}
+
+.legend-chip {
+    -fx-background-color: rgba(10, 10, 16, 0.65);
+    -fx-background-radius: 12;
+    -fx-padding: 3 9 3 7;
+    -fx-border-color: rgba(255, 255, 255, 0.08);
+    -fx-border-radius: 12;
+    -fx-border-width: 1;
+}
+
+.legend-chip-label {
+    -fx-text-fill: #E6E6EC;
+    -fx-font-size: 11px;
+    -fx-font-weight: normal;
 }
 
 .frequency-range-selector {
@@ -230,4 +256,108 @@
     -fx-border-color: #2a2a2a;
     -fx-border-radius: 4;
     -fx-background-radius: 4;
+}
+
+/* Disabled controls: opacity alone (the JavaFX default) leaves text-fill
+ * unchanged on dark backgrounds, which makes labels look "active but ignored".
+ * Override the label/control colour and tone the background down so every
+ * disabled widget reads consistently as inactive. */
+.button:disabled,
+.combo-box:disabled,
+.spinner:disabled,
+.text-field:disabled,
+.choice-box:disabled,
+.check-box:disabled,
+.slider:disabled,
+.range-slider:disabled {
+    -fx-opacity: 0.55;
+}
+
+.label:disabled {
+    -fx-text-fill: #6e6e76;
+    -fx-opacity: 1.0;
+}
+
+.button:disabled {
+    -fx-background-color: #232323;
+    -fx-border-color: #2a2a2a;
+    -fx-text-fill: #7a7a82;
+}
+
+/* SplitPane divider: the platform default is a faint hairline that's nearly
+ * invisible on a dark theme. Give it a subtle tone + a hover affordance so
+ * users discover they can drag it. */
+.split-pane {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.split-pane > .split-pane-divider {
+    -fx-background-color: #1a1a1a;
+    -fx-padding: 0 2 0 2;
+}
+
+.split-pane:vertical > .split-pane-divider {
+    -fx-padding: 2 0 2 0;
+}
+
+.split-pane > .split-pane-divider:hover {
+    -fx-background-color: -fx-accent;
+}
+
+/* Scrollbars: thin, transparent track, tinted thumb that lights up on hover. */
+.scroll-pane {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+.scroll-pane > .viewport {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar:horizontal,
+.scroll-bar:vertical {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar:horizontal .track,
+.scroll-bar:vertical .track {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-border-color: transparent;
+}
+
+.scroll-bar:horizontal .thumb,
+.scroll-bar:vertical .thumb {
+    -fx-background-color: #3a3a3a;
+    -fx-background-insets: 2;
+    -fx-background-radius: 6;
+}
+
+.scroll-bar:horizontal .thumb:hover,
+.scroll-bar:vertical .thumb:hover {
+    -fx-background-color: #5a5a5a;
+}
+
+.scroll-bar:horizontal .increment-button,
+.scroll-bar:horizontal .decrement-button,
+.scroll-bar:vertical .increment-button,
+.scroll-bar:vertical .decrement-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-shape: " ";
+    -fx-padding: 0;
+}
+
+/* DeviceSection / RecordingTab status labels: small, dimmer than the
+ * primary text, italic so they read as "secondary information". */
+.device-status,
+.recording-status {
+    -fx-text-fill: #9a9aa0;
+    -fx-font-size: 11px;
+    -fx-font-style: italic;
 }

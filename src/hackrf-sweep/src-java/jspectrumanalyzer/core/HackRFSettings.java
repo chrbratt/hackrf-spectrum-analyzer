@@ -31,8 +31,6 @@ public interface HackRFSettings {
 
 	public ModelValue<FrequencyRange> getFrequency();
 
-	public ModelValueInt getGain();
-
 	public ModelValueInt getGainLNA();
 	
 	public ModelValueBoolean getAntennaLNA();
@@ -81,23 +79,11 @@ public interface HackRFSettings {
 	public ModelValue<FrequencyAllocationTable> getFrequencyAllocationTable();
 
 	public ModelValue<BigDecimal> getSpectrumLineThickness();
-	
-	public ModelValue<String> getLogDetail();
-	
-	public ModelValue<String> getVideoArea();
-	
-	public ModelValue<String> getVideoFormat();
-	
-	public ModelValueInt getVideoResolution();
-	
-	public ModelValueInt getVideoFrameRate();
-	
+
 	public ModelValueInt getGainVGA();
 
 	public ModelValueBoolean isCapturingPaused();
-	
-	public ModelValueBoolean isRecordedVideo();
-	
+
 	public ModelValueBoolean isRecordedData();
 	
 	public ModelValueBoolean isChartsRealtimeVisible();

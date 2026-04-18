@@ -3,6 +3,7 @@ package jspectrumanalyzer.fx;
 import javafx.application.Application;
 import javafx.stage.Stage;
 import jspectrumanalyzer.fx.engine.SpectrumEngine;
+import jspectrumanalyzer.fx.engine.SpectrumRecorder;
 import jspectrumanalyzer.fx.model.SettingsStore;
 
 /**
@@ -15,6 +16,8 @@ public final class FxApp extends Application {
 
     private SettingsStore settings;
     private SpectrumEngine engine;
+    @SuppressWarnings("unused") // kept alive by listener registration on engine + settings
+    private SpectrumRecorder recorder;
 
     public static void main(String[] args) {
         launch(FxApp.class, args);
@@ -24,6 +27,7 @@ public final class FxApp extends Application {
     public void init() {
         settings = new SettingsStore();
         engine = new SpectrumEngine(settings);
+        recorder = new SpectrumRecorder(settings, engine);
     }
 
     @Override

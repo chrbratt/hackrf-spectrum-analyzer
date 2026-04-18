@@ -18,19 +18,30 @@ public class DatasetSpectrum implements Cloneable
 	protected int cachedDataItemsIndex	= 0;
 	protected  final float	fftBinSizeHz;
 
+	/**
+	 * Frequency plan that defines the sweep coverage. For the legacy
+	 * single-range case this is a single-segment plan and behaves
+	 * identically to the previous implementation (logical MHz == RF MHz, no
+	 * gaps, no separator lines on the chart).
+	 */
+	protected final FrequencyPlan plan;
+
 	protected  final long	freqStartHz;
 	protected  final int	freqStartMHz;
-	
+
 	protected  final int	freqStopMHz;
 	protected  final int	freqShift;
 	protected  float[]		spectrum;
 	protected  float		spectrumInitPower;
 
 	/**
-	 * Per-bin frequency in MHz (already shifted). Final because freqStartHz,
-	 * fftBinSizeHz, freqShift and spectrum.length never change after the
-	 * dataset is constructed; sharing the same array across all chart frames
-	 * removes ~7 MB/s of allocations at 30 fps with 4 visible series.
+	 * Per-bin <b>logical</b> frequency in MHz (stitched, not RF). For a
+	 * single-segment plan logical MHz equals RF MHz. For a multi-segment
+	 * plan the gaps are removed so JFreeChart paints contiguous data and the
+	 * waterfall canvas (which uses {@code pixelX = width/size * i}) lines up
+	 * with the chart x-axis automatically. Use {@link #rfFrequencyMHzAt(int)}
+	 * when the actual radio frequency of a bin is needed (peak markers,
+	 * allocations, tooltips).
 	 */
 	protected final float[] frequencyAxisMHz;
 
@@ -41,32 +52,42 @@ public class DatasetSpectrum implements Cloneable
 	 * processing thread continues writing.
 	 */
 	protected final float[] spectrumSnapshot;
-	
+
+	/** Legacy constructor - wraps the (start, stop) pair in a single-segment plan. */
+	public DatasetSpectrum(float fftBinSizeHz, int freqStartMHz, int freqStopMHz,
+			float spectrumInitPower, int freqShift) {
+		this(fftBinSizeHz,
+				FrequencyPlan.single(new FrequencyRange(freqStartMHz, freqStopMHz)),
+				spectrumInitPower, freqShift);
+	}
+
 	/**
-	 * Inits
-	 * @param fftBinSizeHz
-	 * @param freqStartMHz
-	 * @param freqStopMHz
-	 * @param spectrumInitPower 
-	 * @param peaks enable calculation of peaks
-	 * @param peakFallThreshold
-	 * @param peakFalloutMillis
+	 * Plan-aware constructor. For multi-segment plans the {@code spectrum}
+	 * array contains <em>only</em> bins for sweepable frequencies - gaps
+	 * between segments are not allocated, so neither chart nor waterfall
+	 * waste pixels on dead air.
 	 */
-	public DatasetSpectrum(float fftBinSizeHz, int freqStartMHz, int freqStopMHz, float spectrumInitPower, int freqShift)
-	{
+	public DatasetSpectrum(float fftBinSizeHz, FrequencyPlan plan,
+			float spectrumInitPower, int freqShift) {
 		this.fftBinSizeHz = fftBinSizeHz;
-		this.freqStartMHz = freqStartMHz;
-		this.freqStartHz = freqStartMHz * 1000000l;
-		this.freqStopMHz = freqStopMHz;
+		this.plan = plan;
+		this.freqStartMHz = plan.firstStartMHz();
+		this.freqStartHz = (long) plan.firstStartMHz() * 1_000_000L;
+		this.freqStopMHz = plan.lastEndMHz();
 		this.freqShift = freqShift;
 		this.spectrumInitPower = spectrumInitPower;
-		int datapoints = (int) (Math.ceil(freqStopMHz - freqStartMHz) * 1000000d / fftBinSizeHz);
+		int datapoints = plan.totalBinCount(fftBinSizeHz);
 		spectrum = new float[datapoints];
 		Arrays.fill(spectrum, spectrumInitPower);
 
 		frequencyAxisMHz = new float[datapoints];
+		float binWidthMHz = fftBinSizeHz / 1_000_000f;
 		for (int i = 0; i < datapoints; i++) {
-			frequencyAxisMHz[i] = (freqStartHz + fftBinSizeHz * i) / 1_000_000f + freqShift;
+			// Logical x: bins are uniformly spaced on the stitched axis,
+			// regardless of any gaps in the underlying RF plan. freqShift is
+			// applied verbatim so the user-facing scale matches the spectrum
+			// chart axis.
+			frequencyAxisMHz[i] = i * binWidthMHz + freqShift;
 		}
 
 		spectrumSnapshot = new float[datapoints];
@@ -76,17 +97,19 @@ public class DatasetSpectrum implements Cloneable
 			for (int j = 0; j < 5; j++) {
 				ArrayList<XYDataItem> list	= new ArrayList<>();
 				for (int i = 0; i < datapoints; i++) {
-					double freq = (freqStartHz + fftBinSizeHz * i) / 1000000;
-					list.add(new XYDataItem(freq, 0));
+					list.add(new XYDataItem(frequencyAxisMHz[i], 0));
 				}
 				cachedDataItems.add(list);
 			}
 		}
 	}
-	
+
 	/**
-	 * Adds new data to spectrum's dataset
-	 * @param fftBins
+	 * Adds new data to spectrum's dataset. Samples that fall in a gap
+	 * between segments (only possible for multi-segment plans) are silently
+	 * dropped - the native side may still send a few near a segment edge if
+	 * the tuning step doesn't divide the gap evenly.
+	 *
 	 * @return true if the whole spectrum was refreshed once
 	 */
 	public boolean addNewData(FFTBins fftBins)
@@ -97,12 +120,11 @@ public class DatasetSpectrum implements Cloneable
 		for (int binsIndex = 0; binsIndex < fftBins.freqStart.length; binsIndex++)
 		{
 			double freqStart = fftBins.freqStart[binsIndex];
-			int spectrIndex = (int) ((freqStart - freqStartHz) / fftBinSizeHz);
+			int spectrIndex = plan.rfHzToGlobalBin(freqStart, fftBinSizeHz);
 			if (spectrIndex < 0 || spectrIndex >= spectrum.length)
 				continue;
 			spectrum[spectrIndex] = fftBins.sigPowdBm[binsIndex];
 		}
-		
 
 		return triggerRefresh;
 	}
@@ -116,8 +138,10 @@ public class DatasetSpectrum implements Cloneable
 		}
 		catch (CloneNotSupportedException e)
 		{
-			e.printStackTrace();
-			return null;
+			// DatasetSpectrum implements Cloneable so this branch is
+			// unreachable; convert to AssertionError to fail fast instead
+			// of returning null and crashing later with NPE.
+			throw new AssertionError("DatasetSpectrum.clone()", e);
 		}
 		return copy;
 	}
@@ -181,15 +205,26 @@ public class DatasetSpectrum implements Cloneable
 		return freqShift;
 	}
 
+	public FrequencyPlan getPlan() {
+		return plan;
+	}
+
 	/**
-	 * Translates index of spectrum to frequency in Hz
-	 * @param index
-	 * @return
+	 * Translates index of spectrum to actual <b>RF</b> frequency in Hz
+	 * (plan-aware). Use this anywhere a real radio frequency is needed (peak
+	 * marker labels, allocation overlay, persistent display calibration).
 	 */
 	public double getFrequency(int index)
 	{
-		double freq = (freqStartHz + fftBinSizeHz * index);
-		return freq;
+		return plan.globalBinToRfMHz(index, fftBinSizeHz) * 1_000_000d;
+	}
+
+	/**
+	 * Actual RF frequency in MHz (no shift) of the bin at {@code index}.
+	 * Returned value is suitable for human-readable peak markers.
+	 */
+	public double rfFrequencyMHzAt(int index) {
+		return plan.globalBinToRfMHz(index, fftBinSizeHz);
 	}
 
 	public float getPower(int index)
@@ -228,8 +263,7 @@ public class DatasetSpectrum implements Cloneable
 		if (!useCached){
 			for (int i = 0; i < spectrum.length; i++)
 			{
-				double freq = (freqStartHz + fftBinSizeHz * i) / 1000000;
-				series.add(freq, spectrum[i]);
+				series.add(frequencyAxisMHz[i], spectrum[i]);
 			}
 		}
 		else{

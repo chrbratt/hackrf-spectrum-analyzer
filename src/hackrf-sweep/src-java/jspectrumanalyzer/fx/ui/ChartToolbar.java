@@ -67,7 +67,8 @@ public final class ChartToolbar extends HBox {
         freezeBtn.setTooltip(tip(
                 "Freeze the on-screen plot but keep the HackRF streaming. "
                 + "Press again (or Space) to resume updates. "
-                + "Hardware is never paused so you don't get a 'cold start' delay on resume."));
+                + "Hardware is never paused so you don't get a 'cold start' delay on resume.\n"
+                + "Shortcut: Space    Start/Stop sweep: F5    Esc: reset zoom"));
         freezeBtn.setOnAction(e -> settings.isCapturingPaused().setValue(
                 !settings.isCapturingPaused().getValue()));
         settings.isCapturingPaused().addListener(() -> Platform.runLater(() -> {

@@ -2,7 +2,12 @@ package jspectrumanalyzer.fx.ui;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -37,11 +42,26 @@ import jspectrumanalyzer.nativebridge.HackRFSweepNativeBridge;
  */
 public final class DeviceSection extends VBox {
 
+    private static final Logger LOG = LoggerFactory.getLogger(DeviceSection.class);
+
     private static final HackRFDeviceInfo FIRST_AVAILABLE =
             new HackRFDeviceInfo("", "First available HackRF",
                     0, HackRFDeviceInfo.BOARD_ID_UNKNOWN);
 
     private static final PseudoClass DANGER = PseudoClass.getPseudoClass("danger");
+
+    /**
+     * Single-threaded executor for libusb enumeration. Keeping a single
+     * worker (instead of {@code new Thread} per refresh click) means
+     * a flurry of fast clicks queues sequentially against libusb instead
+     * of racing with overlapping {@code listDevices()} calls. Daemon so
+     * the JVM still exits even if libusb_init hangs.
+     */
+    private static final ExecutorService DEVICE_IO = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "DeviceSection-io");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final SettingsStore settings;
 
@@ -177,12 +197,12 @@ public final class DeviceSection extends VBox {
      */
     private void reloadDevices() {
         refreshBtn.setDisable(true);
-        Thread t = new Thread(() -> {
+        DEVICE_IO.execute(() -> {
             List<HackRFDeviceInfo> devices;
             try {
                 devices = HackRFSweepNativeBridge.listDevices();
             } catch (Throwable ex) {
-                ex.printStackTrace();
+                LOG.warn("listDevices failed", ex);
                 devices = List.of();
             }
             List<HackRFDeviceInfo> snapshot = devices;
@@ -193,9 +213,7 @@ public final class DeviceSection extends VBox {
                 // re-enable when we're still stopped.
                 refreshBtn.setDisable(settings.isRunningRequested().getValue());
             });
-        }, "DeviceSection-refresh");
-        t.setDaemon(true);
-        t.start();
+        });
     }
 
     private void applyDeviceList(List<HackRFDeviceInfo> devices) {
@@ -271,7 +289,7 @@ public final class DeviceSection extends VBox {
         try {
             return HackRFSweepNativeBridge.getOpenedInfo();
         } catch (Throwable t) {
-            t.printStackTrace();
+            LOG.warn("getOpenedInfo failed", t);
             return null;
         }
     }

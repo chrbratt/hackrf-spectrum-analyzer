@@ -88,8 +88,11 @@ public class PersistentDisplay {
 				long t = System.currentTimeMillis() - calibrationStarted;
 				if (t >= calibrationTime) {
 					updatesPerSecond = (float) incomingDataCounter / (t / 1000f);
-					int bins = (int) ((datasetSpectrum.getFreqStopMHz() - datasetSpectrum.getFreqStartMHz()) * 1000000l
-							/ datasetSpectrum.getFFTBinSizeHz());
+					// Use the dataset's actual bin count: for multi-segment
+					// plans the (stop - start) span includes gaps that are
+					// NOT allocated, so the legacy formula would oversize the
+					// image and waste GPU upload bandwidth.
+					int bins = datasetSpectrum.spectrumLength();
 					BufferedImage image = displayImage.getValue();
 					if (bins < image.getWidth()) {
 						setImageSize(bins, image.getHeight());
@@ -115,10 +118,11 @@ public class PersistentDisplay {
 		/**
 		 * EMA
 		 */
+		// EMA decay only (no current-sample term): each pixel fades by (1-k)
+		// per frame where k follows the standard EMA half-life formula.
 		float order = persistenceTimeSecs * updatesPerSecond;
 		float k = 2f / (order + 1f);
-		//		double result = currentValue * k + previousEMA * (1 - k);
-		float kM1 = 1 - k; /* apply decay only */
+		float kM1 = 1 - k;
 		imagePowerAccumulated.multiplyAllValues(kM1);
 
 		float[] spectrum = datasetSpectrum.getSpectrumArray();
@@ -126,53 +130,29 @@ public class PersistentDisplay {
 		int height = image.getHeight();
 		float hDivYRange = (-height) / (yMax - yMin);
 
-		/**
-		 * pipeline: float image accumulates power for each pixel, then the
-		 * power value gets converted to color based on the hot iron palette
-		 */
+		// Pipeline: the float buffer accumulates +1 per (frequency, power)
+		// hit. Once per render cycle the accumulator gets log-compressed and
+		// mapped through the palette to produce the colour image.
 		float maxAccumulatedValue = updatesPerSecond * persistenceTimeSecs;
 		for (int i = 0; i < spectrum.length; i++) {
 			float power = spectrum[i];
-			float powerLin = 1; /*
-								 * each occurence of power value at given
-								 * frequency is simply +1
-								 */
-
 			int x = i * width / spectrum.length;
-			int y = //(power - yMin) * (0 - height) / (yMax - yMin) + height; 
-					(int) ((power - yMin) * hDivYRange
-							+ height); /* optimized map() */
+			int y = (int) ((power - yMin) * hDivYRange + height);
 
 			if (x >= 0 && y >= 0 && x < width && y < height) {
 				int index = imagePowerAccumulated.getIndex(x, y);
 				if (imagePowerAccumulated.data[index] < maxAccumulatedValue)
-					imagePowerAccumulated.data[index] += powerLin;
+					imagePowerAccumulated.data[index] += 1f;
 			}
 		}
 
-		/**
-		 * render image only when requested
-		 */
 		if (renderImage) {
-			/**
-			 * Find the max value to properly scale
-			 */
 			float maxValue = Float.MIN_NORMAL;
 			for (int i = 0; i < rawImagePowerArr.length; i++) {
 				float value = rawImagePowerArr[i];
 				if (value > maxValue)
 					maxValue = value;
 			}
-
-			/**
-			 * Fill the image with black color
-			 */
-			//			Graphics2D g	= image.createGraphics();
-			//			g.setColor(Color.red);
-			//			g.fillRect(0, 0, width, height);
-			//			g.dispose();
-			//			renderImage	= false;
-			//			
 
 			float setToZeroThreshold = 0.01f;
 			float minOutToLog = 1.0f;
@@ -190,28 +170,14 @@ public class PersistentDisplay {
 					if (val == 0) {
 						image.setRGB(x, y, Color.black.getRGB());
 					} else {
-						float outPower = val;
-
-						/**
-						 * Log compressed values
-						 */
-						outPower = (float) Math.log10(map(outPower, 0, maxValue, minOutToLog, maxOutToLog));
-						float normalized = map(outPower, logMin, logMax, 0.15f, 0.95f); //(imagePowerAccumulated.get(x, y)) / (maxValue);
-
-						/**
-						 * linear values
-						 */
-						//						float normalized	= map(outPower, 0, maxValue, 0.4f, 0.9f); //(imagePowerAccumulated.get(x, y)) / (maxValue);
-
+						float outPower = (float) Math.log10(
+								map(val, 0, maxValue, minOutToLog, maxOutToLog));
+						float normalized = map(outPower, logMin, logMax, 0.15f, 0.95f);
 						Color color = palette.getColorNormalized(normalized);
-
 						image.setRGB(x, y, color.getRGB());
-						//						g.setColor(color);
-						//						g.drawLine(x, y, x, y);
 					}
 				}
 			}
-
 		}
 	}
 

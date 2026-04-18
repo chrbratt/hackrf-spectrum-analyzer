@@ -1,16 +1,24 @@
 package jspectrumanalyzer.fx.engine;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import jspectrumanalyzer.core.DatasetSpectrumPeak;
 import jspectrumanalyzer.core.FFTBins;
-import jspectrumanalyzer.core.FrequencyRange;
 import jspectrumanalyzer.core.HackRFSettings.HackRFEventListener;
 import jspectrumanalyzer.core.SpurFilter;
 import jspectrumanalyzer.fx.model.SettingsStore;
@@ -33,7 +41,26 @@ import jspectrumanalyzer.nativebridge.HackRFSweepNativeBridge;
  */
 public final class SpectrumEngine implements HackRFSweepDataCallback {
 
+    private static final Logger LOG = LoggerFactory.getLogger(SpectrumEngine.class);
+
     private static final float SPECTRUM_INIT_POWER = -150f;
+
+    /**
+     * Builds a single-thread {@link ExecutorService} whose worker is a
+     * named daemon, with all uncaught exceptions routed through SLF4J.
+     * Daemon flag is critical: if the native sweep DLL ever hangs in
+     * {@code stopSweep}, the JVM can still exit on user logout.
+     */
+    private static ExecutorService namedSingleThread(String name) {
+        ThreadFactory tf = r -> {
+            Thread t = new Thread(r, name);
+            t.setDaemon(true);
+            t.setUncaughtExceptionHandler((thr, ex) ->
+                    LOG.error("Uncaught exception in {}", thr.getName(), ex));
+            return t;
+        };
+        return Executors.newSingleThreadExecutor(tf);
+    }
 
     private final SettingsStore settings;
 
@@ -43,9 +70,21 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
 
     private final List<Consumer<SpectrumFrame>> frameConsumers = new CopyOnWriteArrayList<>();
 
-    private volatile Thread launcherThread;
-    private volatile Thread sweepThread;
-    private volatile Thread processingThread;
+    /**
+     * Three single-thread executors, one per concurrent role. They are
+     * created up-front and shut down once on engine shutdown; sweep and
+     * processing tasks are submitted/cancelled per restart cycle. Keeping
+     * one executor per role (rather than a shared cached pool) means
+     * thread names in jstack / profilers tell us exactly which subsystem
+     * is busy, and a misbehaving worker can't starve the others.
+     */
+    private final ExecutorService launcherExec   = namedSingleThread("SpectrumEngine-launcher");
+    private final ExecutorService sweepExec      = namedSingleThread("hackrf_sweep");
+    private final ExecutorService processingExec = namedSingleThread("SpectrumEngine-processing");
+
+    private volatile Future<?> launcherFuture;
+    private volatile Future<?> sweepFuture;
+    private volatile Future<?> processingFuture;
     private volatile boolean forceStopSweep = false;
     private volatile boolean shuttingDown = false;
     private volatile boolean hwSendingData = false;
@@ -95,10 +134,13 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     public void shutdown() {
         shuttingDown = true;
         stopSweep();
-        Thread t = launcherThread;
-        if (t != null) {
-            t.interrupt();
-        }
+        Future<?> lf = launcherFuture;
+        if (lf != null) lf.cancel(true);
+        // shutdownNow interrupts the worker (which our launcher loop
+        // checks via Thread.interrupted()) and prevents new submits.
+        launcherExec.shutdownNow();
+        sweepExec.shutdownNow();
+        processingExec.shutdownNow();
     }
 
     public DatasetSpectrumPeak getDatasetSpectrum() {
@@ -124,7 +166,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                                 float fftBinWidthHz, float[] signalPowerdBm) {
         fireHardwareStateChanged(true);
         if (!hwProcessingQueue.offer(new FFTBins(sweepStarted, frequencyStart, fftBinWidthHz, signalPowerdBm))) {
-            System.err.println("SpectrumEngine: queue full, dropping sample");
+            LOG.warn("Processing queue full, dropping sample (UI thread is too slow)");
         }
     }
 
@@ -134,6 +176,10 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         // RUNNING, they restart the sweep just like the legacy behaviour.
         Runnable restartIfRunning = this::restartSweepIfRunning;
         settings.getFrequency().addListener(restartIfRunning);
+        // A change in the multi-range plan (preset switch, single->multi or
+        // back) needs the same treatment as a single-range change: restart
+        // the sweep so the new segment list is pushed to libhackrf.
+        settings.getFrequencyPlan().addListener(restartIfRunning);
         settings.getFFTBinHz().addListener(restartIfRunning);
         settings.getSamples().addListener(restartIfRunning);
         settings.getGainLNA().addListener(restartIfRunning);
@@ -141,11 +187,6 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         settings.getAntennaPowerEnable().addListener(restartIfRunning);
         settings.getAntennaLNA().addListener(restartIfRunning);
         settings.getAvgIterations().addListener(restartIfRunning);
-        settings.getLogDetail().addListener(restartIfRunning);
-        settings.getVideoArea().addListener(restartIfRunning);
-        settings.getVideoFormat().addListener(restartIfRunning);
-        settings.getVideoResolution().addListener(restartIfRunning);
-        settings.getVideoFrameRate().addListener(restartIfRunning);
 
         // Picking a different physical device requires fully re-opening
         // libhackrf, which is exactly what restartSweep() does anyway.
@@ -171,21 +212,18 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     }
 
     private void startLauncherThread() {
-        launcherThread = new Thread(() -> {
-            Thread.currentThread().setName("SpectrumEngine-launcher");
-            while (!shuttingDown) {
+        launcherFuture = launcherExec.submit(() -> {
+            while (!shuttingDown && !Thread.currentThread().isInterrupted()) {
                 try {
                     launchCommands.take();
                     reconcileToRunningRequested();
                 } catch (InterruptedException e) {
                     return;
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.error("Launcher thread reconcile failed", e);
                 }
             }
         });
-        launcherThread.setDaemon(true);
-        launcherThread.start();
     }
 
     /**
@@ -223,47 +261,74 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
 
     private void restartSweepExecute() {
         stopSweep();
-        sweepThread = new Thread(() -> {
-            Thread.currentThread().setName("hackrf_sweep");
+        sweepFuture = sweepExec.submit(() -> {
             try {
                 forceStopSweep = false;
                 sweepLoop();
             } catch (IOException e) {
-                e.printStackTrace();
+                LOG.error("Sweep loop crashed", e);
             }
         });
-        sweepThread.start();
     }
+
+    /** Cap on how long we will wait for a single native stop attempt. */
+    private static final long NATIVE_STOP_JOIN_MS = 2_000;
+    /** How many times we re-issue {@code hackrf_sweep_lib_stop()} before giving up. */
+    private static final int  NATIVE_STOP_RETRIES = 5;
 
     private void stopSweep() {
         forceStopSweep = true;
-        Thread t = sweepThread;
-        if (t != null) {
-            while (t.isAlive()) {
-                forceStopSweep = true;
+        Future<?> sf = sweepFuture;
+        if (sf != null) {
+            // The legacy code spun in a 20 ms sleep loop hammering
+            // hackrf_sweep_lib_stop() until the worker exited. We instead
+            // ask the native side to stop, then block on Future.get with a
+            // bounded timeout. If the worker still hasn't exited after a
+            // few rounds we log, cancel(true) (interrupt) and move on so a
+            // misbehaving DLL can never freeze the launcher (and hence
+            // the Stop button).
+            for (int i = 0; i < NATIVE_STOP_RETRIES && !sf.isDone(); i++) {
                 HackRFSweepNativeBridge.stop();
-                try {
-                    Thread.sleep(20);
-                } catch (InterruptedException ignored) {
-                    Thread.currentThread().interrupt();
-                }
+                if (waitFor(sf, NATIVE_STOP_JOIN_MS)) break;
             }
-            try {
-                t.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            if (!sf.isDone()) {
+                LOG.warn("hackrf_sweep worker did not exit after {} ms; cancelling",
+                        NATIVE_STOP_RETRIES * NATIVE_STOP_JOIN_MS);
+                sf.cancel(true);
             }
-            sweepThread = null;
+            sweepFuture = null;
         }
-        Thread p = processingThread;
-        if (p != null) {
-            p.interrupt();
-            try {
-                p.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        Future<?> pf = processingFuture;
+        if (pf != null) {
+            pf.cancel(true); // delivers interrupt; runProcessing checks isInterrupted
+            if (!waitFor(pf, NATIVE_STOP_JOIN_MS)) {
+                LOG.warn("Processing thread did not exit within {} ms; abandoning",
+                        NATIVE_STOP_JOIN_MS);
             }
-            processingThread = null;
+            processingFuture = null;
+        }
+    }
+
+    /**
+     * Block up to {@code timeoutMs} for {@code f} to finish. Returns true
+     * when the future completed (normally, exceptionally or via cancel),
+     * false on timeout. Interrupted state is preserved on the caller.
+     */
+    private static boolean waitFor(Future<?> f, long timeoutMs) {
+        try {
+            f.get(timeoutMs, TimeUnit.MILLISECONDS);
+            return true;
+        } catch (TimeoutException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return f.isDone();
+        } catch (ExecutionException e) {
+            // Worker threw; logged at the source. We still treat the
+            // future as "finished" because the thread is gone.
+            return true;
+        } catch (java.util.concurrent.CancellationException e) {
+            return true;
         }
     }
 
@@ -274,34 +339,35 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     private void sweepLoop() throws IOException {
         lock.lock();
         try {
-            processingThread = new Thread(() -> {
-                Thread.currentThread().setName("SpectrumEngine-processing");
+            processingFuture = processingExec.submit(() -> {
                 try {
                     runProcessing();
                 } catch (InterruptedException e) {
-                    // Expected: stopSweep() interrupts us on every settings change
-                    // and on shutdown. Nothing to log.
+                    // Expected: stopSweep() cancels us on every settings change
+                    // and on shutdown. Restore interrupt flag and exit silently.
                     Thread.currentThread().interrupt();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.error("Processing thread crashed", e);
                 }
             });
-            processingThread.start();
 
             int consecutiveFailures = 0;
             while (!forceStopSweep) {
-                FrequencyRange freq = settings.getFrequency().getValue();
-                System.out.println("SpectrumEngine: starting hackrf_sweep "
-                        + freq.getStartMHz() + "-" + freq.getEndMHz() + " MHz "
-                        + " RBW " + settings.getFFTBinHz().getValue() + " kHz"
-                        + " samples " + settings.getSamples().getValue()
-                        + " lna " + settings.getGainLNA().getValue()
-                        + " vga " + settings.getGainVGA().getValue());
+                // getEffectivePlan() folds the legacy single-range UI and the
+                // multi-range preset into one source of truth so the engine
+                // doesn't care which path drove the change.
+                jspectrumanalyzer.core.FrequencyPlan plan = settings.getEffectivePlan();
+                LOG.info("Starting hackrf_sweep {} RBW {} kHz samples {} lna {} vga {}",
+                        plan,
+                        settings.getFFTBinHz().getValue(),
+                        settings.getSamples().getValue(),
+                        settings.getGainLNA().getValue(),
+                        settings.getGainVGA().getValue());
                 fireHardwareStateChanged(false);
 
                 long started = System.nanoTime();
                 HackRFSweepNativeBridge.start(this,
-                        freq.getStartMHz(), freq.getEndMHz(),
+                        plan,
                         settings.getFFTBinHz().getValue() * 1000,
                         settings.getSamples().getValue(),
                         settings.getGainLNA().getValue(),
@@ -323,8 +389,8 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                     sleepMs = Math.min(SWEEP_RETRY_MAX_MS,
                             SWEEP_RETRY_MIN_MS * (1L << Math.min(consecutiveFailures - 1, 4)));
                     if (consecutiveFailures == 1) {
-                        System.err.println("SpectrumEngine: hackrf_sweep exited immediately "
-                                + "(no device?). Backing off " + sleepMs + " ms before retry.");
+                        LOG.warn("hackrf_sweep exited immediately (no device?). "
+                                + "Backing off {} ms before retry.", sleepMs);
                     }
                 } else {
                     consecutiveFailures = 0;
@@ -347,9 +413,12 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         FFTBins bin1 = hwProcessingQueue.take();
         float binHz = bin1.fftBinWidthHz;
 
-        FrequencyRange freq = settings.getFrequency().getValue();
+        // Use the same plan the native side was started with - keeps the
+        // dataset's bin layout in lockstep with the segments the sweep is
+        // actually producing samples for.
+        jspectrumanalyzer.core.FrequencyPlan plan = settings.getEffectivePlan();
         datasetSpectrum = new DatasetSpectrumPeak(binHz,
-                freq.getStartMHz(), freq.getEndMHz(),
+                plan,
                 SPECTRUM_INIT_POWER,
                 settings.getPeakFallTrs().getValue(),
                 settings.getPeakFallRate().getValue() * 1000L,
@@ -437,7 +506,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                 try {
                     consumer.accept(frame);
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.error("Frame consumer threw", e);
                 }
             }
         }
@@ -453,7 +522,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
             try {
                 listener.hardwareStatusChanged(sendingData);
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error("HW state listener threw", e);
             }
         }
     }

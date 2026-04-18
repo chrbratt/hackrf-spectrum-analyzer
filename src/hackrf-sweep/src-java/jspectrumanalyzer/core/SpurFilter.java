@@ -37,7 +37,9 @@ public class SpurFilter
 		this.maxPeakBins = maxPeakBins;
 		this.validIterations = validIterations;
 		this.input = input;
-		this.filter = new DatasetSpectrum(input.getFFTBinSizeHz(), input.getFreqStartMHz(), input.getFreqStopMHz(), 0, input.getFreqShift());
+		// Use the plan-aware constructor so multi-segment sweeps allocate the
+		// same shape of bin buffer as the input dataset.
+		this.filter = new DatasetSpectrum(input.getFFTBinSizeHz(), input.getPlan(), 0, input.getFreqShift());
 		this.avgSpectrum = input.cloneMe();
 		this.noiseFloor = avgSpectrum.cloneMe();
 	}

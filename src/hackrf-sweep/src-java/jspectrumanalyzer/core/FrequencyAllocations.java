@@ -11,7 +11,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.io.FileNotFoundException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class FrequencyAllocations {
+
+	private static final Logger LOG = LoggerFactory.getLogger(FrequencyAllocations.class);
 	/** Classpath directory under which {@code freq/*.csv} and {@code freq/index.txt} live. */
 	private static final String RESOURCE_DIR = "/freq/";
 	/** Generated at build time; one file name per line. */
@@ -35,8 +40,7 @@ public class FrequencyAllocations {
 	private void loadAll() throws FileNotFoundException {
 		InputStream indexStream = FrequencyAllocations.class.getResourceAsStream(INDEX_RESOURCE);
 		if (indexStream == null) {
-			System.err.println("FrequencyAllocations: '" + INDEX_RESOURCE
-					+ "' missing on classpath; no allocation tables loaded.");
+			LOG.warn("'{}' missing on classpath; no allocation tables loaded.", INDEX_RESOURCE);
 			return;
 		}
 		try (BufferedReader reader = new BufferedReader(
@@ -47,7 +51,7 @@ public class FrequencyAllocations {
 				if (name.isEmpty()) continue;
 				try (InputStream csv = FrequencyAllocations.class.getResourceAsStream(RESOURCE_DIR + name)) {
 					if (csv == null) {
-						System.err.println("FrequencyAllocations: missing resource " + RESOURCE_DIR + name);
+						LOG.warn("Missing resource {}{}", RESOURCE_DIR, name);
 						continue;
 					}
 					loadTableFromCSV(name, csv);
@@ -92,7 +96,7 @@ public class FrequencyAllocations {
 			}
 			
 		} catch (Exception e) {
-			e.printStackTrace();
+			LOG.warn("Failed to parse allocation table {}", locationName, e);
 			return;
 		}
 		finally {

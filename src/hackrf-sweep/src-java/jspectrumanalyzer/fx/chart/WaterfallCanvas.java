@@ -12,6 +12,8 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.WritableImage;
 import javafx.scene.paint.Paint;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import jspectrumanalyzer.core.DatasetSpectrum;
 import jspectrumanalyzer.ui.GraphicsToolkit;
 import jspectrumanalyzer.ui.HotIronBluePalette;
@@ -26,9 +28,45 @@ import jspectrumanalyzer.ui.HotIronBluePalette;
  */
 public final class WaterfallCanvas extends Canvas {
 
+    private static final Logger LOG = LoggerFactory.getLogger(WaterfallCanvas.class);
+
     private static final int MIN_BUFFER_WIDTH = 64;
     private static final int MIN_BUFFER_HEIGHT = 32;
     private static final float MINIMUM_DRAW_BUFFER_VALUE = -150f;
+
+    /**
+     * Per-stage timing meter, opt-in via {@code -Dwaterfall.perf=true}.
+     * Reports rolling avg/max/count once per second (rate-limited to keep
+     * log noise predictable). When disabled, the only overhead is one
+     * {@code System.nanoTime()} read per call - negligible compared to
+     * the BufferedImage allocation work the path already does.
+     */
+    private static final boolean PERF =
+            Boolean.getBoolean("waterfall.perf");
+    private static final long PERF_REPORT_NS = 1_000_000_000L;
+    private final PerfMeter addPerf  = PERF ? new PerfMeter("addNewData") : null;
+    private final PerfMeter paintPerf = PERF ? new PerfMeter("paint")     : null;
+
+    private static final class PerfMeter {
+        private final String name;
+        private long count;
+        private long sumNs;
+        private long maxNs;
+        private long lastReportNs = System.nanoTime();
+        PerfMeter(String name) { this.name = name; }
+        void record(long elapsedNs) {
+            count++;
+            sumNs += elapsedNs;
+            if (elapsedNs > maxNs) maxNs = elapsedNs;
+            long now = System.nanoTime();
+            if (now - lastReportNs >= PERF_REPORT_NS && count > 0) {
+                LOG.info("waterfall.{}: {} calls, avg {} us, max {} us",
+                        name, count, sumNs / 1000 / count, maxNs / 1000);
+                count = 0; sumNs = 0; maxNs = 0;
+                lastReportNs = now;
+            }
+        }
+    }
 
     private BufferedImage[] bufferedImages = new BufferedImage[2];
     private float[] drawMaxBuffer = new float[MIN_BUFFER_WIDTH];
@@ -89,6 +127,7 @@ public final class WaterfallCanvas extends Canvas {
      */
     public synchronized void addNewData(DatasetSpectrum spectrum) {
         if (spectrum == null) return;
+        long t0 = PERF ? System.nanoTime() : 0L;
         this.lastSpectrum = spectrum;
         int size = spectrum.spectrumLength();
         double width = bufferedImages[0].getWidth();
@@ -102,8 +141,13 @@ public final class WaterfallCanvas extends Canvas {
             g.setColor(Color.black);
             g.fillRect(0, 0, (int) width, 1);
 
-            float binWidth = (float) (spectrum.getFFTBinSizeHz()
-                    / ((spectrum.getFreqStopMHz() - spectrum.getFreqStartMHz()) * 1_000_000d) * width);
+            // Bin pixel width = canvas width / number of allocated bins. For
+            // multi-segment plans this is the only formula that stays correct
+            // (the legacy MHz-span formula counted gap regions as if they had
+            // bins, shrinking each bin by the gap fraction). It also matches
+            // widthDivSize below, which is what the per-bin loop already uses
+            // to pick a target column.
+            float binWidth = (float) ((double) width / size);
             Rectangle2D.Float rect = new Rectangle2D.Float(0f, 0f, binWidth, 0f);
 
             Arrays.fill(drawMaxBuffer, MINIMUM_DRAW_BUFFER_VALUE);
@@ -144,6 +188,7 @@ public final class WaterfallCanvas extends Canvas {
         } finally {
             g.dispose();
         }
+        if (PERF) addPerf.record(System.nanoTime() - t0);
     }
 
     /**
@@ -174,6 +219,7 @@ public final class WaterfallCanvas extends Canvas {
     }
 
     private synchronized void paint() {
+        long t0 = PERF ? System.nanoTime() : 0L;
         GraphicsContext gc = getGraphicsContext2D();
         double w = getWidth();
         double h = getHeight();
@@ -188,6 +234,7 @@ public final class WaterfallCanvas extends Canvas {
         // different chartWidth would introduce horizontal blur/banding.
         gc.drawImage(fxImage, 0, 0, source.getWidth(), source.getHeight(),
                 chartXOffset, 0, source.getWidth(), source.getHeight());
+        if (PERF) paintPerf.record(System.nanoTime() - t0);
     }
 
     private synchronized void resizeBuffers() {

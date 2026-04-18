@@ -55,7 +55,23 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 			float peakFallThreshold, long peakFalloutMillis, long peakHoldMillis, int freqShift, int avgIterations,
 			int avgOffset)
 	{
-		super(fftBinSizeHz, freqStartMHz, freqStopMHz, spectrumInitPower, freqShift);
+		this(fftBinSizeHz,
+				FrequencyPlan.single(new FrequencyRange(freqStartMHz, freqStopMHz)),
+				spectrumInitPower, peakFallThreshold, peakFalloutMillis,
+				peakHoldMillis, freqShift, avgIterations, avgOffset);
+	}
+
+	/**
+	 * Plan-aware constructor. All per-bin buffers are sized via
+	 * {@link FrequencyPlan#totalBinCount(double)}, so multi-segment plans
+	 * allocate exactly the bins they will use - no gap padding.
+	 */
+	public DatasetSpectrumPeak(float fftBinSizeHz, FrequencyPlan plan,
+			float spectrumInitPower, float peakFallThreshold,
+			long peakFalloutMillis, long peakHoldMillis, int freqShift,
+			int avgIterations, int avgOffset)
+	{
+		super(fftBinSizeHz, plan, spectrumInitPower, freqShift);
 
 		this.peakFalloutMillis = peakFalloutMillis;
 		this.peakHoldMillis = peakHoldMillis;
@@ -63,9 +79,9 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		this.peakFallThreshold = peakFallThreshold;
 		this.avgIterations = avgIterations;
 		this.avgOffset = avgOffset;
-		int datapoints = (int) (Math.ceil(freqStopMHz - freqStartMHz) * 1000000d / fftBinSizeHz);
-		spectrum = new float[datapoints];
-		Arrays.fill(spectrum, spectrumInitPower);
+		// Reuse the bin count the parent already computed from the plan -
+		// keeps every per-bin array in lockstep with spectrum.length.
+		int datapoints = spectrum.length;
 		spectrumPeak = new float[datapoints];
 		Arrays.fill(spectrumPeak, spectrumInitPower);
 		spectrumPeakHold = new float[datapoints];
@@ -174,12 +190,17 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		double[] out = new double[4];
 		float maxAmp = spectrumInitPower;
 		double maxFreq = freqStartMHz + freqShift;
-		double freqStep = fftBinSizeHz / 1000000d;
+		// Quantise the peak label to one bin width so the on-screen number
+		// stops jittering at sub-Hz precision. Plan-aware: rfFrequencyMHzAt
+		// returns the actual RF MHz of bin i across all segments.
+		double freqStep = fftBinSizeHz / 1_000_000d;
+		double quantum = freqStep > 0 ? Math.round(1d / freqStep) : 1d;
 		for (int i = 0; i < spectrumPeakHold.length; i++) {
 			if (spectrumPeakHold[i] > -95) {powerSum += Math.pow(10, spectrumPeakHold[i] / 10);} /*convert dB to mW to sum power in linear form*/
 			if (spectrumPeakHold[i] > maxAmp) {
 				maxAmp = spectrumPeakHold[i];
-				maxFreq = (double)Math.round(Math.round(1 / freqStep) * (freqStartMHz + freqStep * i)) / Math.round(1 / freqStep) + freqShift;
+				double rfMHz = rfFrequencyMHzAt(i);
+				maxFreq = Math.round(quantum * rfMHz) / quantum + freqShift;
 			}
 		}
 		powerFluxSum = (powerSum * Math.pow(10,(PowerFluxCalibration/10f))) * (4 * Math.PI * Math.pow(maxFreq / 1E3, 2) * 1E18) / Math.pow(299792458, 2);
@@ -190,17 +211,19 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		out[3] = roundToSignificantFigures(powerFluxSum,2);
 		return out;
 	}
-	
+
 	public double[] calculateMarkerHold(){
 		double[] out = new double[2];
 		float maxAmpHold = spectrumInitPower;
 		double maxFreqHold = freqStartMHz + freqShift;
-		double freqStep = fftBinSizeHz / 1000000d;
+		double freqStep = fftBinSizeHz / 1_000_000d;
+		double quantum = freqStep > 0 ? Math.round(1d / freqStep) : 1d;
 
 		for (int i = 0; i < spectrumMaxHold.length; i++) {
 			if (spectrumMaxHold[i] > maxAmpHold) {
 				maxAmpHold = spectrumMaxHold[i];
-				maxFreqHold = (double)Math.round(Math.round(1 / freqStep) * (freqStartMHz + freqStep * i)) / Math.round(1 / freqStep) + freqShift;
+				double rfMHz = rfFrequencyMHzAt(i);
+				maxFreqHold = Math.round(quantum * rfMHz) / quantum + freqShift;
 			}
 		}
 		out[0] = (double) Math.round(10 * maxAmpHold) / 10;

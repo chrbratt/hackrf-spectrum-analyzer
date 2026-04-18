@@ -3,14 +3,16 @@ package jspectrumanalyzer.fx.ui;
 import java.io.FileNotFoundException;
 
 import javafx.geometry.Insets;
-import javafx.scene.Node;
 import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import jspectrumanalyzer.core.FrequencyMultiRangePreset;
+import jspectrumanalyzer.core.FrequencyPlan;
 import jspectrumanalyzer.core.FrequencyPresets;
 import jspectrumanalyzer.core.FrequencyRange;
 import jspectrumanalyzer.fx.frequency.FrequencyRangeSelector;
@@ -48,28 +50,31 @@ public final class ScanTab extends ScrollPane {
         content.setPadding(new Insets(12));
         content.getChildren().addAll(
                 FxControls.section("Device", new DeviceSection(settings)),
-                FxControls.section("Frequency", rangeSelector, buildPanBar()),
+                FxControls.section("Frequency",
+                        rangeSelector,
+                        buildPanBar(),
+                        buildMultiRangeRow()),
                 FxControls.section("Resolution",
-                        labeled("RBW [kHz]",
+                        FxControls.labeled("RBW [kHz]",
                                 FxControls.withTooltip(
                                         FxControls.intSpinner(settings.getFFTBinHz(), 1, 5000, 5),
                                         "Resolution Bandwidth: width of one FFT bin in kHz. "
                                         + "Smaller = sharper frequency resolution but slower sweeps "
                                         + "and more noise per bin. 50 kHz is a good default.")),
                         buildRbwPresets(),
-                        labeled("Samples",
+                        FxControls.labeled("Samples",
                                 FxControls.withTooltip(
                                         FxControls.intSpinner(settings.getSamples(), 1024, 131072, 1024),
                                         "FFT size per tuning step. More samples = better noise floor "
                                         + "and finer effective bandwidth, at the cost of CPU."))),
                 FxControls.section("Gain",
-                        labeled("LNA gain (dB, 8 dB steps)",
+                        FxControls.labeled("LNA gain (dB, 8 dB steps)",
                                 FxControls.withTooltip(
                                         FxControls.slider(settings.getGainLNA(), 0, 40),
                                         "Front-end Low-Noise Amplifier gain. Hardware only accepts "
                                         + "0, 8, 16, 24, 32, 40 dB. Increase for weak signals; reduce "
                                         + "if strong signals look clipped or you see ghost peaks.")),
-                        labeled("VGA gain (dB, 2 dB steps)",
+                        FxControls.labeled("VGA gain (dB, 2 dB steps)",
                                 FxControls.withTooltip(
                                         FxControls.slider(settings.getGainVGA(), 0, 62),
                                         "Baseband Variable-Gain Amplifier. Hardware accepts steps of "
@@ -120,6 +125,58 @@ public final class ScanTab extends ScrollPane {
         return panBar;
     }
 
+    /**
+     * Compact "Multi-band:" + combo row appended at the bottom of the
+     * Frequency section. Picking anything other than "Off" enables a
+     * {@link FrequencyPlan} that stitches several sub-bands together,
+     * removing the dead air between them. Lives inside the Frequency
+     * section to avoid spending a whole section header on a single combo.
+     */
+    private HBox buildMultiRangeRow() {
+        Label caption = new Label("Multi-band:");
+        ComboBox<FrequencyMultiRangePreset> combo = buildMultiRangeCombo();
+        HBox row = new HBox(6, caption, combo);
+        row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        HBox.setHgrow(combo, Priority.ALWAYS);
+        return row;
+    }
+
+    /**
+     * Combo for picking a multi-band stitched scan. "Off" returns the engine
+     * to the legacy single-range path. Selecting any other entry installs a
+     * {@link FrequencyPlan} that drops the gaps between bands and paints
+     * separator lines on the spectrum chart.
+     */
+    private ComboBox<FrequencyMultiRangePreset> buildMultiRangeCombo() {
+        ComboBox<FrequencyMultiRangePreset> combo = new ComboBox<>();
+        combo.getItems().addAll(FrequencyMultiRangePreset.defaults());
+        // Initial selection mirrors the model: a non-null plan in the store
+        // (e.g. restored from preferences in the future) selects its preset
+        // when the names match; otherwise we land on Off.
+        FrequencyPlan currentPlan = settings.getFrequencyPlan().getValue();
+        FrequencyMultiRangePreset initial = FrequencyMultiRangePreset.OFF;
+        if (currentPlan != null) {
+            for (FrequencyMultiRangePreset p : combo.getItems()) {
+                if (p.getPlan() != null && p.getPlan().equals(currentPlan)) {
+                    initial = p;
+                    break;
+                }
+            }
+        }
+        combo.getSelectionModel().select(initial);
+        combo.valueProperty().addListener((obs, oldV, newV) -> {
+            if (newV == null) return;
+            settings.getFrequencyPlan().setValue(newV.getPlan());
+        });
+        FxControls.withTooltip(combo,
+                "Stitch multiple bands into a single chart by removing the dead air "
+                + "between them. Wi-Fi 2.4 + 5 + 6E sweeps three regulatory sub-bands "
+                + "and skips ~2.6 GHz of unused spectrum, so each band gets full "
+                + "horizontal resolution. Pick \"Off\" to go back to a single-range scan.");
+        combo.setMaxWidth(Double.MAX_VALUE);
+        return combo;
+    }
+
     private FlowPane buildRbwPresets() {
         FlowPane chips = new FlowPane(4, 4);
         chips.getChildren().add(presetLabel("Presets:"));
@@ -146,10 +203,5 @@ public final class ScanTab extends ScrollPane {
         int newStart = cur.getStartMHz() + delta;
         int newEnd = cur.getEndMHz() + delta;
         settings.getFrequency().setValue(validator.coerce(newStart, newEnd));
-    }
-
-    private static VBox labeled(String caption, Node control) {
-        Label label = new Label(caption);
-        return new VBox(2, label, control);
     }
 }

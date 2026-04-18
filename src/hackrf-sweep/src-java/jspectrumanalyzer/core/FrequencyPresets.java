@@ -9,7 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class FrequencyPresets {
+	private static final Logger LOG = LoggerFactory.getLogger(FrequencyPresets.class);
 	private static final String RESOURCE_PATH = "/presets.csv";
 
 	private List<Preset> presets;
@@ -44,7 +48,7 @@ public class FrequencyPresets {
 				presets.add(preset);
 			}
 		} catch (Exception e) {
-			e.printStackTrace();
+			LOG.warn("Failed to parse {} preset CSV", tableName, e);
 			return;
 		} finally {
 			if (reader != null) {

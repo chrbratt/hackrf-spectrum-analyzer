@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import javafx.application.Platform;
 
 import org.jfree.chart.plot.XYPlot;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import jspectrumanalyzer.core.DatasetSpectrum;
 import jspectrumanalyzer.core.PersistentDisplay;
@@ -22,6 +24,8 @@ import jspectrumanalyzer.fx.model.SettingsStore;
  * chart data area width and height, so the heatmap matches the plot aspect ratio.
  */
 public final class PersistentDisplayController {
+
+    private static final Logger LOG = LoggerFactory.getLogger(PersistentDisplayController.class);
 
     private final PersistentDisplay persistentDisplay = new PersistentDisplay();
     private final SettingsStore settings;
@@ -82,17 +86,18 @@ public final class PersistentDisplayController {
         DatasetSpectrum dataset = frame.dataset;
         if (dataset == null) return;
         try {
-            XYPlot plot = spectrumChart.getChart().getXYPlot();
-            // Range axis is configured once at construction and never mutated, so
-            // reading it from the processing thread is a safe reference snapshot.
-            float yMin = (float) plot.getRangeAxis().getRange().getLowerBound();
-            float yMax = (float) plot.getRangeAxis().getRange().getUpperBound();
-            persistentDisplay.drawSpectrum2(dataset, yMin, yMax, render);
+            // Y-range is a compile-time constant on the chart, so we don't
+            // need to touch any JFreeChart object from the processing thread.
+            // Previously we did `plot.getRangeAxis().getRange()` here, which
+            // is technically a cross-thread read of a non-thread-safe Swing
+            // model; the constants give us identical values without the race.
+            persistentDisplay.drawSpectrum2(
+                    dataset, SpectrumChart.Y_MIN_DBM, SpectrumChart.Y_MAX_DBM, render);
             if (render) {
                 scheduleFxBackgroundUpdate();
             }
         } catch (Throwable t) {
-            t.printStackTrace();
+            LOG.warn("Persistent display render failed", t);
         }
     }
 
@@ -123,7 +128,7 @@ public final class PersistentDisplayController {
                 plot.setBackgroundImage(null);
             }
         } catch (Throwable t) {
-            t.printStackTrace();
+            LOG.warn("Background image swap failed", t);
         }
     }
 }

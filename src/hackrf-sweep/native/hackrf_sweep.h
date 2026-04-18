@@ -113,6 +113,38 @@ HSAPI int HSCALL hackrf_sweep_lib_start(
     unsigned int rf_amp_enable,
     const char*  serial);
 
+/**
+ * Multi-range version of hackrf_sweep_lib_start: sweep up to MAX_SWEEP_RANGES
+ * non-overlapping (start_mhz, end_mhz) pairs in a single hackrf_init_sweep
+ * call. The native callback delivers samples for all ranges; chart code
+ * concatenates them via {@code FrequencyPlan} on the Java side.
+ *
+ * @param num_ranges    1..MAX_SWEEP_RANGES
+ * @param range_pairs   array of {@code 2 * num_ranges} uint16 values laid out
+ *                      as {@code [start0, end0, start1, end1, ...]} in MHz,
+ *                      ascending and non-overlapping. Caller owns the buffer;
+ *                      the function copies it before returning.
+ *
+ * Falling back to hackrf_sweep_lib_start with num_ranges == 1 is equivalent
+ * to calling this with a single pair.
+ */
+HSAPI int HSCALL hackrf_sweep_lib_start_multi(
+    void (*fft_power_callback)(
+        char     full_sweep_done,
+        int      bins,
+        double*  freqStartHz,
+        float    fft_bin_Hz,
+        float*   powerdBm),
+    int          num_ranges,
+    const uint16_t* range_pairs,
+    uint32_t fft_bin_width_hz,
+    uint32_t num_samples,
+    unsigned int lna_gain,
+    unsigned int vga_gain,
+    unsigned int antenna_power_enable,
+    unsigned int rf_amp_enable,
+    const char*  serial);
+
 HSAPI void HSCALL hackrf_sweep_lib_stop(void);
 
 #ifdef __cplusplus

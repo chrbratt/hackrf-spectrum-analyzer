@@ -1,15 +1,23 @@
 package jspectrumanalyzer.fx.ui;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.HBox;
-import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 import org.controlsfx.control.RangeSlider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import jspectrumanalyzer.core.FrequencyAllocationTable;
+import jspectrumanalyzer.core.FrequencyAllocations;
 import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.util.FxControls;
 import shared.mvc.ModelValue.ModelValueInt;
@@ -22,6 +30,8 @@ import shared.mvc.ModelValue.ModelValueInt;
  * shape of those displays (waterfall scroll speed, palette range, persistence).
  */
 public final class DisplayTab extends ScrollPane {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DisplayTab.class);
 
     private static final int PALETTE_MIN = -150;
     private static final int PALETTE_MAX = 0;
@@ -40,7 +50,7 @@ public final class DisplayTab extends ScrollPane {
         content.setPadding(new Insets(12));
         content.getChildren().addAll(
                 FxControls.section("Waterfall",
-                        labeled("Speed (1 = slow, 10 = fast)",
+                        FxControls.labeled("Speed (1 = slow, 10 = fast)",
                                 FxControls.withTooltip(
                                         FxControls.slider(settings.getWaterfallSpeed(), 1, 10),
                                         "How many sweeps per pushed waterfall row. "
@@ -51,12 +61,79 @@ public final class DisplayTab extends ScrollPane {
                         buildPaletteRangeSlider(),
                         paletteReadout()),
                 FxControls.section("Persistent display",
-                        labeled("Persistence time (s)",
+                        FxControls.labeled("Persistence time (s)",
                                 FxControls.withTooltip(
                                         FxControls.intSpinner(settings.getPersistentDisplayDecayRate(), 1, 60, 1),
                                         "Seconds an arriving sample stays visible in the persistent overlay "
-                                        + "before fully decaying. Larger = longer trails."))));
+                                        + "before fully decaying. Larger = longer trails."))),
+                FxControls.section("Frequency allocation overlay",
+                        FxControls.withTooltip(
+                                FxControls.checkBox("Show overlay", settings.isFrequencyAllocationVisible()),
+                                "Paint the colored allocation bands (e.g. Wi-Fi, GSM, FM radio) over the "
+                                + "spectrum so it's obvious which service each peak belongs to. The bands "
+                                + "come from the country file selected below."),
+                        FxControls.labeled("Country / table", buildAllocationCombo())));
         setContent(content);
+    }
+
+    /**
+     * ComboBox of every CSV under {@code freq/}. Picking an entry installs
+     * its {@link FrequencyAllocationTable} in the model; the overlay canvas
+     * picks the change up via its own listener and repaints. The list is
+     * loaded lazily so a missing index file doesn't crash the tab.
+     */
+    private ComboBox<NamedTable> buildAllocationCombo() {
+        ComboBox<NamedTable> combo = new ComboBox<>();
+        combo.getItems().addAll(loadTables());
+        combo.setMaxWidth(Double.MAX_VALUE);
+        FxControls.withTooltip(combo,
+                "Country / region whose allocation bands will be drawn on the chart "
+                + "when the overlay is enabled. Add your own CSV under src/hackrf-sweep/freq.");
+
+        FrequencyAllocationTable current = settings.getFrequencyAllocationTable().getValue();
+        if (current != null) {
+            for (NamedTable nt : combo.getItems()) {
+                if (nt.table == current) {
+                    combo.getSelectionModel().select(nt);
+                    break;
+                }
+            }
+        }
+        combo.valueProperty().addListener((obs, o, n) ->
+                settings.getFrequencyAllocationTable().setValue(n == null ? null : n.table));
+        return combo;
+    }
+
+    private static List<NamedTable> loadTables() {
+        List<NamedTable> result = new ArrayList<>();
+        try {
+            Map<String, FrequencyAllocationTable> all = new FrequencyAllocations().getTable();
+            for (Map.Entry<String, FrequencyAllocationTable> e : all.entrySet()) {
+                result.add(new NamedTable(prettify(e.getKey()), e.getValue()));
+            }
+        } catch (Exception ex) {
+            LOG.warn("Could not load allocation tables", ex);
+        }
+        return result;
+    }
+
+    private static String prettify(String csvFileName) {
+        String s = csvFileName;
+        if (s.toLowerCase().endsWith(".csv")) s = s.substring(0, s.length() - 4);
+        return s.trim();
+    }
+
+    private static final class NamedTable {
+        final String label;
+        final FrequencyAllocationTable table;
+
+        NamedTable(String label, FrequencyAllocationTable table) {
+            this.label = label;
+            this.table = table;
+        }
+
+        @Override
+        public String toString() { return label; }
     }
 
     /**
@@ -137,11 +214,5 @@ public final class DisplayTab extends ScrollPane {
 
     private static int clamp(int v, int lo, int hi) {
         return Math.max(lo, Math.min(hi, v));
-    }
-
-    private static VBox labeled(String caption, Node control) {
-        VBox box = new VBox(2, new Label(caption), control);
-        HBox.setHgrow(control, Priority.ALWAYS);
-        return box;
     }
 }

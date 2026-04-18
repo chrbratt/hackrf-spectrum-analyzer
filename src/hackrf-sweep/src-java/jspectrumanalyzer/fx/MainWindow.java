@@ -15,18 +15,24 @@ import javafx.scene.control.TextInputControl;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.canvas.Canvas;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import jspectrumanalyzer.core.HackRFSettings;
+import jspectrumanalyzer.fx.chart.AllocationOverlayCanvas;
+import jspectrumanalyzer.fx.chart.ChartZoomController;
+import jspectrumanalyzer.fx.chart.LegendOverlay;
 import jspectrumanalyzer.fx.chart.PersistentDisplayController;
 import jspectrumanalyzer.fx.chart.SpectrumChart;
 import jspectrumanalyzer.fx.chart.WaterfallCanvas;
 import jspectrumanalyzer.fx.engine.SpectrumEngine;
 import jspectrumanalyzer.fx.engine.SpectrumFrame;
+import jspectrumanalyzer.fx.frequency.FrequencyRangeValidator;
 import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.ui.ChartToolbar;
 import jspectrumanalyzer.fx.ui.DisplayTab;
@@ -51,6 +57,8 @@ public final class MainWindow {
     private final SpectrumChart spectrumChart;
     private final WaterfallCanvas waterfall;
     private final PersistentDisplayController persistent;
+    private final AllocationOverlayCanvas allocationOverlay;
+    private final Canvas dragOverlay;
 
     private final Label hardwareStatus = new Label("Stopped");
     private final Label peakLabel = new Label("");
@@ -76,6 +84,9 @@ public final class MainWindow {
         this.spectrumChart = new SpectrumChart(settings);
         this.waterfall = new WaterfallCanvas();
         this.persistent = new PersistentDisplayController(settings, spectrumChart);
+        this.allocationOverlay = new AllocationOverlayCanvas(settings);
+        this.dragOverlay = new Canvas();
+        this.dragOverlay.setMouseTransparent(true);
 
         settings.registerListener(new HackRFSettings.HackRFEventAdapter() {
             @Override
@@ -133,13 +144,43 @@ public final class MainWindow {
         waterfall.widthProperty().bind(waterfallHolder.widthProperty());
         waterfall.heightProperty().bind(waterfallHolder.heightProperty());
 
+        // Layered chart pane: the JFreeChart ChartViewer at the bottom plus
+        // two transparent canvases on top - one for the allocation overlay
+        // (coloured bands + labels) and one for the live drag-zoom rectangle.
+        // Both canvases ignore mouse events (setMouseTransparent in their
+        // constructors) so the ZoomController's filters on the ChartViewer
+        // still receive every press / drag / release / scroll.
+        // ChartViewer needs an explicit MAX_VALUE size: StackPane honours
+        // children's maxSize and Control's default max == pref, which would
+        // otherwise pin the chart at its (small) preferred size and leave the
+        // rest of the pane blank - waterfall would still draw because it's
+        // in its own Pane below.
+        spectrumChart.getViewer().setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
+        LegendOverlay legend = new LegendOverlay(settings);
+        StackPane chartLayer = new StackPane(spectrumChart.getViewer(), allocationOverlay, dragOverlay, legend);
+        chartLayer.setMinSize(0, 0);
+        allocationOverlay.widthProperty().bind(chartLayer.widthProperty());
+        allocationOverlay.heightProperty().bind(chartLayer.heightProperty());
+        dragOverlay.widthProperty().bind(chartLayer.widthProperty());
+        dragOverlay.heightProperty().bind(chartLayer.heightProperty());
+        // Pin the legend to the top-right corner with a small inset so it
+        // sits cleanly inside the plot frame; pickOnBounds=false on the
+        // overlay itself keeps drag-zoom on the empty area working.
+        StackPane.setAlignment(legend, Pos.TOP_RIGHT);
+        StackPane.setMargin(legend, new javafx.geometry.Insets(8, 12, 0, 0));
+
+        ChartZoomController zoom = new ChartZoomController(
+                spectrumChart.getViewer(), spectrumChart, settings,
+                new FrequencyRangeValidator(SettingsStore.FREQ_MIN_MHZ, SettingsStore.FREQ_MAX_MHZ),
+                dragOverlay);
+
         // Vertical SplitPane lets the user drag the divider between chart and
         // waterfall. The toolbar sits above the SplitPane in a VBox so it stays
         // pinned regardless of how the user resizes the panes.
-        SplitPane chartStack = new SplitPane(spectrumChart.getViewer(), waterfallHolder);
+        SplitPane chartStack = new SplitPane(chartLayer, waterfallHolder);
         chartStack.setOrientation(Orientation.VERTICAL);
         chartStack.setDividerPositions(0.60);
-        SplitPane.setResizableWithParent(spectrumChart.getViewer(), Boolean.TRUE);
+        SplitPane.setResizableWithParent(chartLayer, Boolean.TRUE);
         SplitPane.setResizableWithParent(waterfallHolder, Boolean.TRUE);
 
         ChartToolbar toolbar = new ChartToolbar(settings, engine, () -> {
@@ -175,7 +216,7 @@ public final class MainWindow {
         Scene scene = new Scene(root, 1280, 800);
         scene.getStylesheets().add(
                 getClass().getResource("/jspectrumanalyzer/fx/theme/dark.css").toExternalForm());
-        installShortcuts(scene, toolbar);
+        installShortcuts(scene, toolbar, tabs, zoom);
 
         stage.setTitle("HackRF Spectrum Analyzer");
         stage.setScene(scene);
@@ -215,14 +256,30 @@ public final class MainWindow {
     }
 
     /**
-     * Scene-wide accelerators. Skipped while a text input is focused so typing
-     * frequency / RBW values isn't intercepted.
+     * Scene-wide accelerators. The single-key bindings (Space / C / W / F5 /
+     * Esc) are skipped while a text input is focused so typing frequency or
+     * RBW values isn't intercepted; the modifier-based bindings
+     * (Ctrl+1..4) survive even in text fields because they cannot be
+     * confused with regular typing.
      */
-    private void installShortcuts(Scene scene, ChartToolbar toolbar) {
+    private void installShortcuts(Scene scene, ChartToolbar toolbar,
+                                  TabPane tabs, ChartZoomController zoom) {
         scene.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+            // Modifier shortcuts first so Ctrl+1..4 works even while the
+            // user is editing a text field (matches every browser/IDE).
+            if (e.isControlDown() && !e.isAltDown() && !e.isMetaDown() && !e.isShiftDown()) {
+                int tabIdx = digitIndex(e.getCode());
+                if (tabIdx >= 0 && tabIdx < tabs.getTabs().size()) {
+                    tabs.getSelectionModel().select(tabIdx);
+                    e.consume();
+                    return;
+                }
+            }
+
             Node focused = scene.getFocusOwner();
             if (focused instanceof TextInputControl) return;
             if (e.isControlDown() || e.isAltDown() || e.isMetaDown() || e.isShiftDown()) return;
+
             if (e.getCode() == KeyCode.SPACE) {
                 toolbar.toggleFreeze();
                 e.consume();
@@ -232,8 +289,29 @@ public final class MainWindow {
             } else if (e.getCode() == KeyCode.W) {
                 toolbar.toggleWaterfall();
                 e.consume();
+            } else if (e.getCode() == KeyCode.F5) {
+                settings.isRunningRequested().setValue(!settings.isRunningRequested().getValue());
+                e.consume();
+            } else if (e.getCode() == KeyCode.ESCAPE) {
+                zoom.resetZoom();
+                e.consume();
             }
         });
+    }
+
+    /**
+     * Map {@code KeyCode.DIGIT1..DIGIT4} (and their numpad twins) to a
+     * zero-based tab index. Returns {@code -1} for any other key so the
+     * accelerator filter above can fall through to its default branches.
+     */
+    private static int digitIndex(KeyCode code) {
+        switch (code) {
+            case DIGIT1: case NUMPAD1: return 0;
+            case DIGIT2: case NUMPAD2: return 1;
+            case DIGIT3: case NUMPAD3: return 2;
+            case DIGIT4: case NUMPAD4: return 3;
+            default: return -1;
+        }
     }
 
     private static HackRFDeviceInfo safeGetOpenedInfo() {
@@ -249,6 +327,7 @@ public final class MainWindow {
         int width = (int) Math.round(area.getWidth());
         waterfall.setDrawingOffsets(xOffset, width);
         persistent.onDataAreaChanged(area);
+        allocationOverlay.onDataAreaChanged(area);
     }
 
     /**

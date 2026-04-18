@@ -3,7 +3,6 @@ package jspectrumanalyzer.fx.ui;
 import javafx.application.Platform;
 import javafx.css.PseudoClass;
 import javafx.geometry.Insets;
-import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
@@ -14,12 +13,15 @@ import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.util.FxControls;
 
 /**
- * Recording tab: capture spectrum samples to disk, plus the (currently
- * disabled) video capture controls.
- * <p>
- * Split out of the previous "Waterfall / REC" tab because mixing display
- * settings with a running recording is confusing — they're different mental
- * tasks and the recording controls deserve their own focused space.
+ * Recording tab: capture spectrum sweeps to a wide-format CSV next to the
+ * working directory. The actual file I/O lives in
+ * {@code SpectrumRecorder}; this tab is just the on/off switch and a tiny
+ * status hint.
+ *
+ * <p>The video / GIF capture controls that lived here in the legacy fork
+ * have been removed: the underlying Xuggler pipeline was deleted long ago,
+ * and a permanently-disabled control just adds noise. When a JavaFX-native
+ * replacement lands the section can come back.
  */
 public final class RecordingTab extends ScrollPane {
 
@@ -37,48 +39,26 @@ public final class RecordingTab extends ScrollPane {
                 + "timestamp so consecutive recordings don't overwrite each other.");
         recData.setOnAction(e -> settings.isRecordedData().setValue(
                 !settings.isRecordedData().getValue()));
+
+        Label status = new Label("Idle");
+        status.getStyleClass().add("recording-status");
+
         settings.isRecordedData().addListener(() -> Platform.runLater(() -> {
             boolean rec = settings.isRecordedData().getValue();
             recData.setText(rec ? "Stop data recording" : "Record data");
             recData.pseudoClassStateChanged(DANGER, rec);
+            status.setText(rec
+                    ? "Recording to hackrf-spectrum-*.csv in " + System.getProperty("user.dir")
+                    : "Idle");
         }));
-
-        Button recVideo = new Button("Record video");
-        recVideo.setMaxWidth(Double.MAX_VALUE);
-        recVideo.setDisable(true);
-        FxControls.withTooltip(recVideo,
-                "Disabled: video / GIF capture is being rewritten for JavaFX. "
-                + "Track the progress in the project's open task list.");
-
-        Node videoRes = FxControls.intSpinner(settings.getVideoResolution(), 360, 1080, 180);
-        videoRes.setDisable(true);
-        FxControls.withTooltip(videoRes,
-                "Output video height in pixels. Width is computed from the "
-                + "current window aspect ratio. Disabled until video capture returns.");
-
-        Node videoFps = FxControls.intSpinner(settings.getVideoFrameRate(), 1, 60, 1);
-        videoFps.setDisable(true);
-        FxControls.withTooltip(videoFps,
-                "Frames per second written to the video. Higher values produce "
-                + "smoother but larger files. Disabled until video capture returns.");
 
         HBox dataRow = new HBox(6, recData);
         HBox.setHgrow(recData, Priority.ALWAYS);
 
-        HBox videoRow = new HBox(6, recVideo);
-        HBox.setHgrow(recVideo, Priority.ALWAYS);
-
         VBox content = new VBox(12);
         content.setPadding(new Insets(12));
         content.getChildren().addAll(
-                FxControls.section("Data recording (CSV)", dataRow),
-                FxControls.section("Video recording", videoRow,
-                        labeled("Video resolution (px height)", videoRes),
-                        labeled("Video frame rate (fps)", videoFps)));
+                FxControls.section("Data recording (CSV)", dataRow, status));
         setContent(content);
-    }
-
-    private static VBox labeled(String caption, Node control) {
-        return new VBox(2, new Label(caption), control);
     }
 }

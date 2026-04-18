@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.List;
 
 import com.sun.jna.CallbackThreadInitializer;
+import com.sun.jna.Memory;
 import com.sun.jna.Native;
 import com.sun.jna.NativeLibrary;
 import com.sun.jna.Platform;
@@ -15,6 +16,8 @@ import com.sun.jna.ptr.FloatByReference;
 import hackrfsweep.HackrfSweepLibrary;
 import hackrfsweep.HackrfSweepLibrary.DeviceInfo;
 import hackrfsweep.HackrfSweepLibrary.hackrf_sweep_lib_start__fft_power_callback_callback;
+import jspectrumanalyzer.core.FrequencyPlan;
+import jspectrumanalyzer.core.FrequencyRange;
 
 /**
  * Java-friendly facade in front of the JNA bindings.
@@ -79,6 +82,29 @@ public class HackRFSweepNativeBridge {
                                           boolean antennaPowerEnable,
                                           boolean internalLNA,
                                           String serial) {
+        // Single-range entry point routes through the multi-range path so the
+        // native ABI only has to be exercised in one place.
+        start(dataCallback,
+                FrequencyPlan.single(new FrequencyRange(freq_min_MHz, freq_max_MHz)),
+                fft_bin_width, num_samples,
+                lna_gain, vga_gain,
+                antennaPowerEnable, internalLNA, serial);
+    }
+
+    /**
+     * Multi-range overload. Allocates a contiguous native buffer holding the
+     * plan's segment endpoints (libhackrf wants {@code uint16[2*N]}) and
+     * delegates to {@code hackrf_sweep_lib_start_multi}.
+     */
+    public static synchronized void start(HackRFSweepDataCallback dataCallback,
+                                          FrequencyPlan plan,
+                                          int fft_bin_width,
+                                          int num_samples,
+                                          int lna_gain,
+                                          int vga_gain,
+                                          boolean antennaPowerEnable,
+                                          boolean internalLNA,
+                                          String serial) {
         hackrf_sweep_lib_start__fft_power_callback_callback callback =
                 new hackrf_sweep_lib_start__fft_power_callback_callback() {
                     @Override
@@ -99,9 +125,19 @@ public class HackRFSweepNativeBridge {
         Native.setCallbackThreadInitializer(callback,
                 new CallbackThreadInitializer(true));
 
+        // Pack endpoints as {start0, end0, start1, end1, ...} uint16. JNA
+        // Memory zero-initialises and outlives the call duration as long as
+        // we keep a reference - the local variable here suffices because
+        // hackrf_sweep_lib_start_multi blocks until the sweep ends and the
+        // native side copies the buffer immediately into its own
+        // frequencies[] table.
+        short[] pairs = plan.toNativePairs();
+        Memory pairsBuf = new Memory((long) pairs.length * Short.BYTES);
+        pairsBuf.write(0, pairs, 0, pairs.length);
+
         String openSerial = (serial == null) ? "" : serial;
-        HackrfSweepLibrary.hackrf_sweep_lib_start(callback,
-                freq_min_MHz, freq_max_MHz,
+        HackrfSweepLibrary.hackrf_sweep_lib_start_multi(callback,
+                plan.segmentCount(), pairsBuf,
                 fft_bin_width, num_samples,
                 lna_gain, vga_gain,
                 antennaPowerEnable ? 1 : 0,

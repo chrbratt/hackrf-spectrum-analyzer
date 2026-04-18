@@ -38,6 +38,10 @@ class HackRFSweepNativeBridgeLoadTest {
         // Missing exports surface as UnsatisfiedLinkError with a clear trace.
         assertNotNull(lib.getFunction("hackrf_sweep_lib_start"),
                 "hackrf_sweep_lib_start export not found");
+        assertNotNull(lib.getFunction("hackrf_sweep_lib_start_multi"),
+                "hackrf_sweep_lib_start_multi export not found "
+                        + "- DLL was built before stitched-axis multi-range "
+                        + "support landed; rebuild via `gradlew buildHackrfSweepDll`.");
         assertNotNull(lib.getFunction("hackrf_sweep_lib_stop"),
                 "hackrf_sweep_lib_stop export not found");
         assertNotNull(lib.getFunction("hackrf_sweep_lib_list_devices"),
