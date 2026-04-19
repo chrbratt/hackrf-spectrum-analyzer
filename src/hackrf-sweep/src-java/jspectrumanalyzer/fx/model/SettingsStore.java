@@ -8,6 +8,8 @@ import jspectrumanalyzer.core.FrequencyAllocationTable;
 import jspectrumanalyzer.core.FrequencyPlan;
 import jspectrumanalyzer.core.FrequencyRange;
 import jspectrumanalyzer.core.HackRFSettings;
+import jspectrumanalyzer.fx.chart.GraphTheme;
+import jspectrumanalyzer.ui.WaterfallPalette;
 import shared.mvc.ModelValue;
 import shared.mvc.ModelValue.ModelValueBoolean;
 import shared.mvc.ModelValue.ModelValueInt;
@@ -99,6 +101,15 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValueBoolean spurRemoval = new ModelValueBoolean("Spur Removal", false);
     private final ModelValueBoolean waterfallVisible = new ModelValueBoolean("Waterfall Visible", true);
 
+    // Visual theme selection. Both default to the look this build shipped
+    // with so first-time users see no surprise; switching either combo in the
+    // Display tab live-updates the corresponding view without restarting the
+    // sweep. Themes are independent: pick any combination of graph + waterfall.
+    private final ModelValue<GraphTheme> graphTheme =
+            new ModelValue<>("Graph Theme", GraphTheme.CLASSIC);
+    private final ModelValue<WaterfallPalette> waterfallTheme =
+            new ModelValue<>("Waterfall Theme", WaterfallPalette.HOT_IRON_BLUE);
+
     // Device selection lives in the model (not in SpectrumEngine) so any UI
     // that needs to react - e.g. the status bar showing the active board name
     // when Start is pressed - can listen on it the same way as on RBW or gain.
@@ -161,6 +172,8 @@ public class SettingsStore implements HackRFSettings {
     public ModelValueBoolean isRunningRequested() { return runningRequested; }
     public ModelValue<FrequencyPlan> getFrequencyPlan() { return frequencyPlan; }
     public ModelValueBoolean isFrequencyAllocationVisible() { return frequencyAllocationVisible; }
+    public ModelValue<GraphTheme> getGraphTheme() { return graphTheme; }
+    public ModelValue<WaterfallPalette> getWaterfallTheme() { return waterfallTheme; }
 
     /**
      * Return the effective frequency plan for the engine. Reads

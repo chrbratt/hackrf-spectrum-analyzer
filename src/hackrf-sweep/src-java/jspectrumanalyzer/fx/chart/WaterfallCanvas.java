@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jspectrumanalyzer.core.DatasetSpectrum;
 import jspectrumanalyzer.ui.GraphicsToolkit;
+import jspectrumanalyzer.ui.ColorPalette;
 import jspectrumanalyzer.ui.HotIronBluePalette;
 
 /**
@@ -72,7 +73,15 @@ public final class WaterfallCanvas extends Canvas {
     private float[] drawMaxBuffer = new float[MIN_BUFFER_WIDTH];
     private WritableImage fxImage;
 
-    private final HotIronBluePalette palette = new HotIronBluePalette();
+    /**
+     * Active palette. Mutable because the user can swap themes from the
+     * Display tab at any time; volatile so the FX-thread paint loop sees the
+     * new instance the moment the model listener writes it. We never read this
+     * inside the per-pixel hot loop more than once - the first {@code palette}
+     * read becomes a local variable - so the volatile read cost is paid once
+     * per row, not per pixel.
+     */
+    private volatile ColorPalette palette = new HotIronBluePalette();
     private double spectrumPaletteSize = 65;
     private double spectrumPaletteStart = -110;
 
@@ -172,13 +181,17 @@ public final class WaterfallCanvas extends Canvas {
                 }
             }
 
-            Color lastValidColor = palette.getColor(0);
+            // Snapshot the volatile palette once per row so a concurrent
+            // setPalette() from the FX thread can't flip the colour ramp
+            // mid-row (would manifest as a single-line discontinuity).
+            ColorPalette p = palette;
+            Color lastValidColor = p.getColor(0);
             for (int x = 0; x < drawMaxBuffer.length; x++) {
                 Color color;
                 if (drawMaxBuffer[x] == MINIMUM_DRAW_BUFFER_VALUE) {
                     color = lastValidColor;
                 } else {
-                    color = palette.getColorNormalized(drawMaxBuffer[x]);
+                    color = p.getColorNormalized(drawMaxBuffer[x]);
                     lastValidColor = color;
                 }
                 rect.x = x;
@@ -189,6 +202,20 @@ public final class WaterfallCanvas extends Canvas {
             g.dispose();
         }
         if (PERF) addPerf.record(System.nanoTime() - t0);
+    }
+
+    /**
+     * Swap the colour ramp used for new pixels. Old scrollback rows keep the
+     * colours they were painted with - re-rasterising the historical buffer
+     * with the new palette would also work, but it would briefly halt the
+     * sweep (we'd have to lock the ring buffer) and the boundary line
+     * between "old palette" and "new palette" is actually a useful visual
+     * cue that the user just changed the theme.
+     */
+    public void setPalette(ColorPalette newPalette) {
+        if (newPalette == null) return;
+        this.palette = newPalette;
+        requestPaint();
     }
 
     /**

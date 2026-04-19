@@ -4,6 +4,7 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 
 import jspectrumanalyzer.ui.GraphicsToolkit;
+import jspectrumanalyzer.ui.ColorPalette;
 import jspectrumanalyzer.ui.HotIronBluePalette;
 import shared.mvc.ModelValue;
 
@@ -65,7 +66,13 @@ public class PersistentDisplay {
 	private ModelValue<BufferedImage>	displayImage		= new ModelValue<BufferedImage>("", null);
 	private FloatImage					imagePowerAccumulated;
 	private int							incomingDataCounter	= 0;
-	private HotIronBluePalette			palette				= new HotIronBluePalette();
+	/**
+	 * Active palette for the heatmap. Volatile because the user can swap themes
+	 * from the Display tab while a sweep is running; the next render reads the
+	 * new instance. Old already-rendered pixels keep their original colours -
+	 * the heatmap accumulates over time so re-rasterising would smear themes.
+	 */
+	private volatile ColorPalette		palette				= new HotIronBluePalette();
 	private int							persistenceTimeSecs	= 5;
 	private float						updatesPerSecond	= 1;
 
@@ -159,6 +166,9 @@ public class PersistentDisplay {
 			float maxOutToLog = 100;
 			float logMin = (float) Math.log10(minOutToLog);
 			float logMax = (float) Math.log10(maxOutToLog);
+			// Snapshot the volatile palette once for this whole frame so a
+			// concurrent setPalette() can't tear the heatmap mid-render.
+			ColorPalette p = palette;
 			for (int x = 0; x < width; x++) {
 				for (int y = 0; y < height; y++) {
 					float val = imagePowerAccumulated.get(x, y);
@@ -173,7 +183,7 @@ public class PersistentDisplay {
 						float outPower = (float) Math.log10(
 								map(val, 0, maxValue, minOutToLog, maxOutToLog));
 						float normalized = map(outPower, logMin, logMax, 0.15f, 0.95f);
-						Color color = palette.getColorNormalized(normalized);
+						Color color = p.getColorNormalized(normalized);
 						image.setRGB(x, y, color.getRGB());
 					}
 				}
@@ -214,5 +224,15 @@ public class PersistentDisplay {
 
 	public void setPersistenceTime(int persistenceTimeSecs) {
 		this.persistenceTimeSecs = persistenceTimeSecs;
+	}
+
+	/**
+	 * Replace the colour ramp used for new pixels. Existing accumulated pixels
+	 * keep the colour they were last rendered with; switching themes mid-stream
+	 * is mostly visible in the freshly painted areas after the call.
+	 */
+	public void setPalette(ColorPalette newPalette) {
+		if (newPalette == null) return;
+		this.palette = newPalette;
 	}
 }

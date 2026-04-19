@@ -18,8 +18,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jspectrumanalyzer.core.FrequencyAllocationTable;
 import jspectrumanalyzer.core.FrequencyAllocations;
+import jspectrumanalyzer.fx.chart.GraphTheme;
 import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.util.FxControls;
+import jspectrumanalyzer.ui.WaterfallPalette;
+import shared.mvc.ModelValue;
 import shared.mvc.ModelValue.ModelValueInt;
 
 /**
@@ -49,6 +52,17 @@ public final class DisplayTab extends ScrollPane {
         VBox content = new VBox(12);
         content.setPadding(new Insets(12));
         content.getChildren().addAll(
+                FxControls.section("Theme",
+                        FxControls.labeled("Graph theme",
+                                FxControls.withTooltip(
+                                        buildThemeCombo(GraphTheme.values(), settings.getGraphTheme()),
+                                        "Visual style for the spectrum chart. Try Heatmap if you want max-hold "
+                                        + "to visibly cool down as it ages, or High Contrast for screenshots.")),
+                        FxControls.labeled("Waterfall theme",
+                                FxControls.withTooltip(
+                                        buildThemeCombo(WaterfallPalette.values(), settings.getWaterfallTheme()),
+                                        "Colour ramp used by the waterfall display. Viridis is the most "
+                                        + "perceptually uniform; Hot Iron Blue matches earlier builds."))),
                 FxControls.section("Waterfall",
                         FxControls.labeled("Speed (1 = slow, 10 = fast)",
                                 FxControls.withTooltip(
@@ -74,6 +88,39 @@ public final class DisplayTab extends ScrollPane {
                                 + "come from the country file selected below."),
                         FxControls.labeled("Country / table", buildAllocationCombo())));
         setContent(content);
+    }
+
+    /**
+     * Two-way bind a {@link ComboBox} to a {@link ModelValue} of an enum-like
+     * type. The combo's items are the supplied options (typically the result
+     * of {@code MyEnum.values()}); each entry's {@code toString()} is what
+     * shows up to the user.
+     *
+     * <p>External writes to the model (e.g. via a future preset that flips
+     * the theme) are reflected in the combo via a listener; combo writes
+     * push back to the model. The {@code selectingFromModel} guard avoids a
+     * listener loop when the change originated in the model.
+     */
+    private static <T> ComboBox<T> buildThemeCombo(T[] options, ModelValue<T> model) {
+        ComboBox<T> combo = new ComboBox<>();
+        combo.getItems().addAll(options);
+        combo.setMaxWidth(Double.MAX_VALUE);
+        combo.getSelectionModel().select(model.getValue());
+
+        boolean[] selectingFromModel = { false };
+        combo.valueProperty().addListener((obs, o, n) -> {
+            if (selectingFromModel[0]) return;
+            if (n != null) model.setValue(n);
+        });
+        model.addListener(() -> Platform.runLater(() -> {
+            T value = model.getValue();
+            if (combo.getValue() != value) {
+                selectingFromModel[0] = true;
+                try { combo.getSelectionModel().select(value); }
+                finally { selectingFromModel[0] = false; }
+            }
+        }));
+        return combo;
     }
 
     /**

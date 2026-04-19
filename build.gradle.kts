@@ -297,9 +297,10 @@ tasks.register<Exec>("jpackageWinApp") {
     dependsOn("stageJpackageInput")
     onlyIf { isWindows() }
     doFirst { layout.buildDirectory.dir("jpackage").get().asFile.mkdirs() }
-    // --win-console keeps a console window attached so stdout/stderr (and any
-    // startup errors) are visible. Drop the flag for a "clean" release build.
-    commandLine = jpackageCommand("app-image") + listOf("--win-console")
+    // Pure GUI launch - no console window. If you ever need to see stdout/
+    // stderr during development, append `--win-console` to the command line
+    // below or run the app via `./gradlew run` instead.
+    commandLine = jpackageCommand("app-image")
 }
 
 tasks.register<Exec>("jpackageWinMsi") {

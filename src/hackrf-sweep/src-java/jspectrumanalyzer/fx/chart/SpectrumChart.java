@@ -32,21 +32,26 @@ import jspectrumanalyzer.fx.model.SettingsStore;
 /**
  * Hosts the existing {@link JFreeChart} inside a JavaFX {@link ChartViewer}.
  *
- * <p>The chart is split across two datasets so we can layer different
+ * <p>The chart is split across three datasets so we can layer different
  * renderers without losing the shared X-axis:
  * <ul>
- *   <li><b>Dataset 0</b> &mdash; line series (peaks, average, max-hold) drawn
- *       with {@link XYLineAndShapeRenderer}. Each series picks its colour from
- *       {@link Palette}.</li>
+ *   <li><b>Dataset 0</b> &mdash; peaks + average lines, drawn with
+ *       {@link XYLineAndShapeRenderer}.</li>
  *   <li><b>Dataset 1</b> &mdash; the realtime trace, drawn with
  *       {@link XYAreaRenderer} so we get a translucent fill under the line for
- *       the modern "FFT shadow" look. Render order is REVERSE so dataset 1
- *       paints first (behind) and the line series sit on top.</li>
+ *       the modern "FFT shadow" look.</li>
+ *   <li><b>Dataset 2</b> &mdash; the max-hold trace, drawn with
+ *       {@link FadeMaxHoldRenderer} which can colour-shift / alpha-fade
+ *       individual bins based on their per-bin age (depending on the active
+ *       {@link GraphTheme.MaxHoldEffect}).</li>
  * </ul>
+ * Render order is REVERSE so high-index datasets paint first and dataset 0
+ * (peaks + average) sits on top, keeping the most-read traces unobstructed.
  *
- * <p>All colours, fonts and strokes used here are also exported via
- * {@link Palette} so the on-screen legend overlay shows the exact same
- * mapping the chart uses.
+ * <p>All colours, strokes and the max-hold effect come from a single
+ * {@link GraphTheme.Spec} held in {@link #currentSpec} - calling
+ * {@link #applyTheme} re-skins the live chart in place. {@link LegendOverlay}
+ * reads the same spec via {@link #currentSpec()}.
  */
 public final class SpectrumChart {
 
@@ -55,41 +60,6 @@ public final class SpectrumChart {
     public static final float Y_MIN_DBM = -100f;
     public static final float Y_MAX_DBM = -10f;
 
-    /**
-     * Chart trace colours, exported so {@code LegendOverlay} renders identical
-     * chips.
-     *
-     * <p>The {@code _FX} mirrors are derived from the AWT constants at class-init
-     * time so the two stay in lock-step automatically; consumers in the FX layer
-     * (the legend in particular) read those and therefore don't need to import
-     * {@code java.awt}.
-     */
-    public static final class Palette {
-        public static final Color PEAKS    = new Color(0x5BE572);
-        public static final Color AVERAGE  = new Color(0xF4C45A);
-        public static final Color MAX_HOLD = new Color(0xFF6B6B);
-        public static final Color REALTIME = new Color(0x7BB6FF);
-
-        public static final javafx.scene.paint.Color PEAKS_FX    = toFx(PEAKS);
-        public static final javafx.scene.paint.Color AVERAGE_FX  = toFx(AVERAGE);
-        public static final javafx.scene.paint.Color MAX_HOLD_FX = toFx(MAX_HOLD);
-        public static final javafx.scene.paint.Color REALTIME_FX = toFx(REALTIME);
-
-        private static javafx.scene.paint.Color toFx(Color c) {
-            return javafx.scene.paint.Color.rgb(c.getRed(), c.getGreen(), c.getBlue());
-        }
-        private Palette() {}
-    }
-
-    // Background and chrome.
-    private static final Color BG_TOP    = new Color(0x14, 0x14, 0x1C);
-    private static final Color BG_BOTTOM = new Color(0x0A, 0x0A, 0x10);
-    private static final Color GRID      = new Color(255, 255, 255, 28);   // ~11% alpha
-    private static final Color CROSSHAIR = new Color(255, 255, 255, 80);   // ~31% alpha
-    private static final Color AXIS_LINE = new Color(255, 255, 255, 60);
-    private static final Color LABEL     = new Color(0xC8, 0xC8, 0xD0);
-    private static final Color TITLE     = new Color(0xE6, 0xE6, 0xEC);
-
     // Font shared by axis label + tick labels. Segoe UI is on every Windows
     // install since Vista; on other OSes Java falls back to Dialog which is
     // close enough that nothing looks broken.
@@ -97,48 +67,47 @@ public final class SpectrumChart {
     private static final Font AXIS_TICK_FONT  = new Font("Segoe UI", Font.PLAIN, 11);
 
     // Dashed strokes for grid + crosshair. Cheap, anti-aliased, much less
-    // visually heavy than the solid 1px lines we used to ship.
+    // visually heavy than the solid 1px lines we used to ship. Stroke shape
+    // is theme-independent; only the paint colour changes per theme.
     private static final BasicStroke GRID_STROKE = new BasicStroke(
             0.5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 1f, new float[]{1f, 4f}, 0f);
     private static final BasicStroke CROSSHAIR_STROKE = new BasicStroke(
             1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 1f, new float[]{2f, 3f}, 0f);
 
-    // Realtime fill = realtime colour at low alpha. Solid (rather than a
-    // GradientPaint) keeps the look stable when the chart resizes - a
-    // pixel-space gradient would shift visibly while dragging the splitter.
-    private static final Color REALTIME_FILL = new Color(
-            Palette.REALTIME.getRed(), Palette.REALTIME.getGreen(), Palette.REALTIME.getBlue(), 70);
-
     private final JFreeChart chart;
     private final ChartViewer chartViewer;
     private final XYSeriesCollection lineDataset;
     private final XYSeriesCollection areaDataset;
+    private final XYSeriesCollection maxHoldDataset;
     private final XYLineAndShapeRenderer lineRenderer;
     private final XYAreaRenderer areaRenderer;
+    private final FadeMaxHoldRenderer maxHoldRenderer;
     private final SettingsStore settings;
+
+    /**
+     * Active theme spec. Chart paint hooks ({@code updateSeries},
+     * {@code applyDomainAxisForCurrentPlan}) read this every time they touch
+     * the plot so a theme switch propagates without us having to re-create
+     * the renderers or the axis. Mutated only on the FX thread.
+     */
+    private GraphTheme.Spec currentSpec = GraphTheme.CLASSIC.spec();
 
     private Rectangle2D lastDataArea = new Rectangle2D.Double(0, 0, 1, 1);
 
     public SpectrumChart(SettingsStore settings) {
         this.settings = settings;
+        this.currentSpec = settings.getGraphTheme().getValue().spec();
+
         lineDataset = new XYSeriesCollection();
         areaDataset = new XYSeriesCollection();
+        maxHoldDataset = new XYSeriesCollection();
         chart = ChartFactory.createXYLineChart("", "Frequency (MHz)", "Amplitude (dBm)",
                 lineDataset, PlotOrientation.VERTICAL, false, false, false);
 
         XYPlot plot = chart.getXYPlot();
-        // Vertical gradient: marginally brighter at the top, deeper near the
-        // bottom. Coordinates are in pixels (Java2D user space). Picking a
-        // span far larger than any realistic chart height makes the gradient
-        // look smooth even on very tall windows; the ends just clamp.
-        plot.setBackgroundPaint(new GradientPaint(0f, 0f, BG_TOP, 0f, 2000f, BG_BOTTOM));
-        plot.setDomainGridlinePaint(GRID);
-        plot.setRangeGridlinePaint(GRID);
+        plot.setOutlineVisible(false);
         plot.setDomainGridlineStroke(GRID_STROKE);
         plot.setRangeGridlineStroke(GRID_STROKE);
-        plot.setOutlineVisible(false);
-        plot.setDomainCrosshairPaint(CROSSHAIR);
-        plot.setRangeCrosshairPaint(CROSSHAIR);
         plot.setDomainCrosshairStroke(CROSSHAIR_STROKE);
         plot.setRangeCrosshairStroke(CROSSHAIR_STROKE);
 
@@ -146,15 +115,13 @@ public final class SpectrumChart {
         rangeAxis.setAutoRange(false);
         rangeAxis.setRange(Y_MIN_DBM, Y_MAX_DBM);
         rangeAxis.setTickUnit(new NumberTickUnit(10, new DecimalFormat("###")));
-        rangeAxis.setLabelPaint(LABEL);
-        rangeAxis.setTickLabelPaint(LABEL);
-        rangeAxis.setAxisLinePaint(AXIS_LINE);
         rangeAxis.setLabelFont(AXIS_LABEL_FONT);
         rangeAxis.setTickLabelFont(AXIS_TICK_FONT);
 
         applyDomainAxisForCurrentPlan();
 
-        // Line renderer used for peaks / average / max-hold.
+        // Line renderer for peaks + average. Max-hold lives in its own
+        // dataset (#2) with the fade-aware renderer below.
         lineRenderer = new XYLineAndShapeRenderer();
         lineRenderer.setDefaultShapesVisible(false);
         lineRenderer.setDefaultStroke(new BasicStroke(
@@ -182,21 +149,29 @@ public final class SpectrumChart {
         areaRenderer.setDefaultCreateEntities(false);
         plot.setDataset(1, areaDataset);
         plot.setRenderer(1, areaRenderer);
-        // REVERSE order: dataset 1 (area, behind) drawn first, dataset 0
-        // (line series, in front) drawn last. Without this the area would
-        // cover the peak/avg/max lines.
+
+        // Dedicated dataset + renderer for max-hold so we can apply per-bin
+        // fade colours without affecting the peaks / average renderer.
+        maxHoldRenderer = new FadeMaxHoldRenderer(currentSpec.maxHold());
+        maxHoldRenderer.setDefaultStroke(new BasicStroke(
+                settings.getSpectrumLineThickness().getValue().floatValue()));
+        plot.setDataset(2, maxHoldDataset);
+        plot.setRenderer(2, maxHoldRenderer);
+
+        // REVERSE order: highest-index dataset drawn first, lowest last.
+        // -> dataset 2 (max-hold, behind), dataset 1 (realtime fill),
+        //    dataset 0 (peaks + average, on top). This keeps peaks/average
+        //    legible even when max-hold is bright red.
         plot.setDatasetRenderingOrder(DatasetRenderingOrder.REVERSE);
 
         if (chart.getTitle() != null) {
             chart.getTitle().setVisible(false);
-            chart.getTitle().setPaint(TITLE);
         }
-        // Match the plot background to the chart background so the modest
-        // padding around the plot area also picks up the gradient.
-        chart.setBackgroundPaint(BG_BOTTOM);
 
         chartViewer = new ChartViewer(chart);
         chartViewer.getStyleClass().add("spectrum-chart");
+
+        applyTheme(currentSpec);
 
         // Plan or single-range change -> rebuild the domain axis. We swap the
         // axis instance entirely (rather than just calling setRange) because
@@ -206,6 +181,55 @@ public final class SpectrumChart {
         settings.getFrequency().addListener(rebuild);
         settings.getFrequencyPlan().addListener(rebuild);
         settings.getFreqShift().addListener(rebuild);
+
+        // Theme switch -> re-skin the chart in place (renderers, datasets and
+        // the axis are reused; only colours / strokes / max-hold effect
+        // change). Listener fires on the model thread; bounce to FX.
+        settings.getGraphTheme().addListener(() -> javafx.application.Platform.runLater(
+                () -> applyTheme(settings.getGraphTheme().getValue().spec())));
+    }
+
+    /**
+     * Re-skin the chart with the colours and effect bundled in {@code spec}.
+     * Called once at construction and again every time the user picks a new
+     * theme from the Display tab. Idempotent.
+     *
+     * <p>Must be called on the FX thread.
+     */
+    public void applyTheme(GraphTheme.Spec spec) {
+        this.currentSpec = spec;
+        XYPlot plot = chart.getXYPlot();
+
+        plot.setBackgroundPaint(new GradientPaint(0f, 0f, spec.bgTop(), 0f, 2000f, spec.bgBottom()));
+        plot.setDomainGridlinePaint(spec.grid());
+        plot.setRangeGridlinePaint(spec.grid());
+        plot.setDomainCrosshairPaint(spec.crosshair());
+        plot.setRangeCrosshairPaint(spec.crosshair());
+
+        NumberAxis rangeAxis = (NumberAxis) plot.getRangeAxis();
+        rangeAxis.setLabelPaint(spec.label());
+        rangeAxis.setTickLabelPaint(spec.label());
+        rangeAxis.setAxisLinePaint(spec.axisLine());
+
+        if (plot.getDomainAxis() != null) {
+            plot.getDomainAxis().setLabelPaint(spec.label());
+            plot.getDomainAxis().setTickLabelPaint(spec.label());
+            plot.getDomainAxis().setAxisLinePaint(spec.axisLine());
+        }
+
+        if (chart.getTitle() != null) chart.getTitle().setPaint(spec.title());
+        // Chart-area background = the gradient's lower stop so the padding
+        // around the plot doesn't show a hard colour seam.
+        chart.setBackgroundPaint(spec.bgBottom());
+
+        // The series-paint bindings on the line / area renderers are
+        // re-applied per frame inside updateSeries(), so updating them here
+        // would just be overwritten on the next sweep. Push the new max-hold
+        // base colour straight to the fade renderer instead.
+        maxHoldRenderer.setRenderState(
+                FadeMaxHoldRenderer.RenderState.idle(spec.maxHold()));
+
+        chart.fireChartChanged();
     }
 
     /**
@@ -225,9 +249,11 @@ public final class SpectrumChart {
         int shift = settings.getFreqShift().getValue();
         XYPlot plot = chart.getXYPlot();
         StitchedNumberAxis newAxis = new StitchedNumberAxis("Frequency (MHz)", plan, shift);
-        newAxis.setLabelPaint(LABEL);
-        newAxis.setTickLabelPaint(LABEL);
-        newAxis.setAxisLinePaint(AXIS_LINE);
+        // Read live theme colours so swapping the axis (single -> multi range)
+        // never resets the look back to defaults.
+        newAxis.setLabelPaint(currentSpec.label());
+        newAxis.setTickLabelPaint(currentSpec.label());
+        newAxis.setAxisLinePaint(currentSpec.axisLine());
         newAxis.setLabelFont(AXIS_LABEL_FONT);
         newAxis.setTickLabelFont(AXIS_TICK_FONT);
         plot.setDomainAxis(newAxis);
@@ -292,37 +318,61 @@ public final class SpectrumChart {
     public void updateSeries(SpectrumFrame frame) {
         DatasetSpectrumPeak ds = frame.dataset;
 
+        // Push the theme's smooth-fade preference to the dataset so the next
+        // refreshMaxHoldSpectrum() pass interpolates (or doesn't) accordingly.
+        // Cheap setter: a volatile boolean assignment, no copies.
+        ds.setMaxHoldSmoothFade(
+                currentSpec.maxHoldEffect() == GraphTheme.MaxHoldEffect.VALUE_FADE);
+
         chart.setNotify(false);
         try {
             lineDataset.removeAllSeries();
             areaDataset.removeAllSeries();
+            maxHoldDataset.removeAllSeries();
             int lineIndex = 0;
             // JFreeChart 1.5.5 crashes on empty series (findLiveItemsLowerBound
             // indexes element 0 unconditionally), so we add only visible
             // series and re-apply per-index paint each frame.
             if (frame.showPeaks) {
                 lineDataset.addSeries(ds.createPeaksDataset("peaks"));
-                lineRenderer.setSeriesPaint(lineIndex++, Palette.PEAKS);
+                lineRenderer.setSeriesPaint(lineIndex++, currentSpec.peaks());
             }
             if (frame.showAverage) {
                 lineDataset.addSeries(ds.createAverageDataset("average"));
-                lineRenderer.setSeriesPaint(lineIndex++, Palette.AVERAGE);
+                lineRenderer.setSeriesPaint(lineIndex++, currentSpec.average());
             }
             if (frame.showMaxHold) {
-                lineDataset.addSeries(ds.createMaxHoldDataset("maxhold"));
-                lineRenderer.setSeriesPaint(lineIndex++, Palette.MAX_HOLD);
+                maxHoldDataset.addSeries(ds.createMaxHoldDataset("maxhold"));
+                // Hand the renderer a fresh snapshot of per-bin age + the
+                // active effect. The renderer holds the array reference; the
+                // dataset reuses the same underlying buffer between frames so
+                // we don't allocate.
+                maxHoldRenderer.setRenderState(new FadeMaxHoldRenderer.RenderState(
+                        currentSpec.maxHoldEffect(),
+                        currentSpec.maxHold(),
+                        ds.getMaxHoldAgeMillisSnapshot(),
+                        ds.getMaxHoldFalloutMillis()));
             }
             if (frame.showRealtime) {
                 areaDataset.addSeries(ds.createSpectrumDataset("spectrum"));
                 // Fill colour (translucent realtime hue) and on-top outline
                 // (full-opacity realtime hue) keep the live trace readable
                 // while still giving the modern "spectrogram halo" effect.
-                areaRenderer.setSeriesPaint(0, REALTIME_FILL);
-                areaRenderer.setSeriesOutlinePaint(0, Palette.REALTIME);
+                Color rt = currentSpec.realtime();
+                Color fill = new Color(rt.getRed(), rt.getGreen(), rt.getBlue(),
+                        currentSpec.realtimeFillAlpha());
+                areaRenderer.setSeriesPaint(0, fill);
+                areaRenderer.setSeriesOutlinePaint(0, rt);
             }
         } finally {
             chart.setNotify(true);
         }
+    }
+
+    /** Latest applied theme spec - read by overlays (e.g. legend) that need
+     *  the same paint values the chart is currently using. */
+    public GraphTheme.Spec currentSpec() {
+        return currentSpec;
     }
 
     public void setSpectrumLineThickness(float thickness) {

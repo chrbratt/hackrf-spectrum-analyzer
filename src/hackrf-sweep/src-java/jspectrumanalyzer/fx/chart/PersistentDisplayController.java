@@ -55,6 +55,16 @@ public final class PersistentDisplayController {
     }
 
     /**
+     * Forward the new colour ramp to the underlying heatmap. Pass-through;
+     * exists so {@link jspectrumanalyzer.fx.MainWindow} can treat the
+     * waterfall and the persistent display the same way without poking at
+     * {@link PersistentDisplay} directly.
+     */
+    public void setPalette(jspectrumanalyzer.ui.ColorPalette palette) {
+        persistentDisplay.setPalette(palette);
+    }
+
+    /**
      * Update buffer size to match the plot's current data area. Should be called on the
      * FX thread (via {@link SpectrumChart#setDataAreaListener}) when the chart data area
      * changes.

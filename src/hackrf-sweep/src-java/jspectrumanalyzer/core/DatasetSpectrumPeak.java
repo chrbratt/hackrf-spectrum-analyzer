@@ -20,6 +20,14 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	 * so old peaks fade away on their own.
 	 */
 	protected volatile long maxHoldFalloutMillis = 0;
+	/**
+	 * When true, max-hold bins linearly interpolate from the original peak
+	 * value toward the current live sample over their lifetime instead of
+	 * snapping at the end. The chart's "Heatmap" theme turns this on so the
+	 * red trace visibly settles down toward the live spectrum as it ages.
+	 * Disabled by default - all other themes use the legacy binary drop.
+	 */
+	protected volatile boolean maxHoldSmoothFade = false;
 	protected long		peakFalloutMillis	= 1000;
 	protected long		peakHoldMillis;
 	protected float		peakFallThreshold;
@@ -39,6 +47,14 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	 * stores real peaks and if {@link #spectrumPeak} falls more than preset value below it, start using values from {@link #spectrumPeak}
 	 */
 	protected float[]	spectrumMaxHold;
+	/**
+	 * The peak value as it was at the moment a bin was last beaten. When
+	 * {@link #maxHoldSmoothFade} is enabled, {@link #spectrumMaxHold} is
+	 * interpolated between this and the live sample over the bin's lifetime;
+	 * keeping the original separately means the interpolation reads from a
+	 * stable anchor instead of from the (already-decaying) display value.
+	 */
+	protected float[]	maxHoldOriginal;
 	protected float[]	spectrumPeakHold;
 	protected float[]	spectrumAverage;
 
@@ -50,6 +66,12 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	protected final float[] peakHoldSnapshot;
 	protected final float[] maxHoldSnapshot;
 	protected final float[] averageSnapshot;
+	/**
+	 * Per-bin age (in milliseconds) of the max-hold value at snapshot time.
+	 * The custom fade renderer uses this to compute alpha / colour shift per
+	 * bin without having to read mutable processing-thread state.
+	 */
+	protected final long[]  maxHoldAgeMillisSnapshot;
 	
 	public DatasetSpectrumPeak(float fftBinSizeHz, int freqStartMHz, int freqStopMHz, float spectrumInitPower,
 			float peakFallThreshold, long peakFalloutMillis, long peakHoldMillis, int freqShift, int avgIterations,
@@ -88,6 +110,8 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		Arrays.fill(spectrumPeakHold, spectrumInitPower);
 		spectrumMaxHold = new float[datapoints];
 		Arrays.fill(spectrumMaxHold, spectrumInitPower);
+		maxHoldOriginal = new float[datapoints];
+		Arrays.fill(maxHoldOriginal, spectrumInitPower);
 		spectrumAverage = new float[datapoints];
 		Arrays.fill(spectrumAverage, spectrumInitPower);
 		spectrumVal = new float[avgIterations][datapoints];
@@ -103,6 +127,7 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		peakHoldSnapshot = new float[datapoints];
 		maxHoldSnapshot = new float[datapoints];
 		averageSnapshot = new float[datapoints];
+		maxHoldAgeMillisSnapshot = new long[datapoints];
 		Arrays.fill(peakHoldSnapshot, spectrumInitPower);
 		Arrays.fill(maxHoldSnapshot, spectrumInitPower);
 		Arrays.fill(averageSnapshot, spectrumInitPower);
@@ -127,6 +152,14 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	 */
 	public void setMaxHoldFalloutMillis(long millis) {
 		this.maxHoldFalloutMillis = Math.max(0L, millis);
+	}
+
+	/**
+	 * Toggle between binary drop (false, default) and smooth value-fade
+	 * (true) for the max-hold trace. Safe to call from any thread.
+	 */
+	public void setMaxHoldSmoothFade(boolean smooth) {
+		this.maxHoldSmoothFade = smooth;
 	}
 	
 	public void setAvgIterations(int avgIterations) {
@@ -178,10 +211,34 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		}
 		if (maxHold) {
 			System.arraycopy(spectrumMaxHold, 0, maxHoldSnapshot, 0, maxHoldSnapshot.length);
+			// Compute per-bin age in one pass so the renderer can read it
+			// off-thread without touching the live timestamp array.
+			long now = System.currentTimeMillis();
+			for (int i = 0; i < maxHoldAgeMillisSnapshot.length; i++) {
+				maxHoldAgeMillisSnapshot[i] = now - maxHoldUpdateTime[i];
+			}
 		}
 		if (average) {
 			System.arraycopy(spectrumAverage, 0, averageSnapshot, 0, averageSnapshot.length);
 		}
+	}
+
+	/**
+	 * Age (ms since last beaten) of every max-hold bin at the moment of the
+	 * latest {@link #snapshotForChart} call. Returned reference is read-only
+	 * and shared across frames; the chart should not retain it across calls.
+	 */
+	public long[] getMaxHoldAgeMillisSnapshot() {
+		return maxHoldAgeMillisSnapshot;
+	}
+
+	/**
+	 * The fallout window the max-hold values were aged against in the most
+	 * recent processing pass. Exposed so the renderer can normalise per-bin
+	 * age to a [0, 1] ratio using exactly the same number the dataset used.
+	 */
+	public long getMaxHoldFalloutMillis() {
+		return maxHoldFalloutMillis;
 	}
 	
 	public double[] calculateSpectrumPeakPower(int PowerFluxCalibration){
@@ -284,25 +341,49 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	
 	public void refreshMaxHoldSpectrum()
 	{
-		// Snapshot the volatile field so a concurrent UI change can't make us
-		// flip mid-loop between "decaying" and "infinite hold".
+		// Snapshot the volatile fields so a concurrent UI change can't make us
+		// flip mid-loop between "decaying" and "infinite hold" or between
+		// smooth-fade and binary-drop.
 		final long fallout = maxHoldFalloutMillis;
+		final boolean smooth = maxHoldSmoothFade;
 		final long now = System.currentTimeMillis();
 		for (int spectrIndex = 0; spectrIndex < spectrum.length; spectrIndex++)
 		{
 			float sample = spectrum[spectrIndex];
-			if (sample > spectrumMaxHold[spectrIndex])
+			if (sample >= maxHoldOriginal[spectrIndex])
 			{
+				// New peak (or tie). Reset both the displayed value and the
+				// anchor we interpolate from.
+				maxHoldOriginal[spectrIndex] = sample;
 				spectrumMaxHold[spectrIndex] = sample;
 				maxHoldUpdateTime[spectrIndex] = now;
+				continue;
 			}
-			else if (fallout > 0 && (now - maxHoldUpdateTime[spectrIndex]) >= fallout)
-			{
-				// Bin's stored peak has aged out without being beaten - drop
-				// it back to the live sample so old activity stops painting
-				// the trace forever.
+
+			if (fallout <= 0) {
+				// Infinite hold: keep whatever the original peak was forever.
+				spectrumMaxHold[spectrIndex] = maxHoldOriginal[spectrIndex];
+				continue;
+			}
+
+			long age = now - maxHoldUpdateTime[spectrIndex];
+			if (age >= fallout) {
+				// Lifetime expired: snap back to live and reset the anchor.
+				maxHoldOriginal[spectrIndex] = sample;
 				spectrumMaxHold[spectrIndex] = sample;
 				maxHoldUpdateTime[spectrIndex] = now;
+			} else if (smooth) {
+				// Linear interpolation: at age=0 we show the original peak,
+				// at age=fallout we'd show the live sample. The eye reads
+				// this as the peak "settling down" toward live, which is
+				// visually clearer than the original binary drop.
+				float k = (float) age / (float) fallout;
+				spectrumMaxHold[spectrIndex] =
+						maxHoldOriginal[spectrIndex]
+						+ (sample - maxHoldOriginal[spectrIndex]) * k;
+			} else {
+				// Binary drop: hold the original peak until lifetime expires.
+				spectrumMaxHold[spectrIndex] = maxHoldOriginal[spectrIndex];
 			}
 		}
 	}
@@ -339,6 +420,7 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	public void resetMaxHold()
 	{
 		Arrays.fill(spectrumMaxHold, spectrumInitPower);
+		Arrays.fill(maxHoldOriginal, spectrumInitPower);
 		Arrays.fill(maxHoldUpdateTime, System.currentTimeMillis());
 	}
 	

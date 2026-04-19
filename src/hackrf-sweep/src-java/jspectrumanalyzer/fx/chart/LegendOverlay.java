@@ -1,5 +1,7 @@
 package jspectrumanalyzer.fx.chart;
 
+import java.util.function.Supplier;
+
 import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.control.Label;
@@ -20,10 +22,9 @@ import shared.mvc.ModelValue.ModelValueBoolean;
  * advertises traces that are actually being drawn. When all chips are hidden
  * the HBox shrinks to zero and disappears completely.
  *
- * <p>The dot colours come from {@link SpectrumChart.Palette}'s {@code _FX}
- * constants, which are derived from the AWT constants the JFreeChart renderer
- * uses; that guarantees the legend matches what the chart paints without
- * forcing this FX overlay to import {@code java.awt}.
+ * <p>Chip dot colours are sourced from the active {@link GraphTheme} so the
+ * legend always matches what the chart is currently painting; switching
+ * themes from the Display tab repaints all dots in place.
  *
  * <p>Mounted in a {@link javafx.scene.layout.StackPane} above the
  * {@link org.jfree.chart.fx.ChartViewer}; uses {@code pickOnBounds=false} so
@@ -42,15 +43,35 @@ public final class LegendOverlay extends HBox {
         // around them must not swallow drag-zoom events on the chart below.
         setPickOnBounds(false);
 
-        getChildren().addAll(
-                buildChip("Peaks",   SpectrumChart.Palette.PEAKS_FX,    settings.isChartsPeaksVisible()),
-                buildChip("Average", SpectrumChart.Palette.AVERAGE_FX,  settings.isChartsAverageVisible()),
-                buildChip("Max",     SpectrumChart.Palette.MAX_HOLD_FX, settings.isChartsMaxHoldVisible()),
-                buildChip("Live",    SpectrumChart.Palette.REALTIME_FX, settings.isChartsRealtimeVisible()));
+        // Each chip resolves its colour lazily through a Supplier that reads
+        // the live theme spec. That way the same chip handles every theme
+        // switch without us having to reattach listeners or rebuild children.
+        Chip peaks   = buildChip("Peaks",   () -> settings.getGraphTheme().getValue().spec().peaksFx(),
+                                 settings.isChartsPeaksVisible());
+        Chip average = buildChip("Average", () -> settings.getGraphTheme().getValue().spec().averageFx(),
+                                 settings.isChartsAverageVisible());
+        Chip maxHold = buildChip("Max",     () -> settings.getGraphTheme().getValue().spec().maxHoldFx(),
+                                 settings.isChartsMaxHoldVisible());
+        Chip live    = buildChip("Live",    () -> settings.getGraphTheme().getValue().spec().realtimeFx(),
+                                 settings.isChartsRealtimeVisible());
+
+        getChildren().addAll(peaks.box, average.box, maxHold.box, live.box);
+
+        // Single listener on the theme model fans out to all chips. Cheap:
+        // we just re-read the supplier and write the dot fill.
+        settings.getGraphTheme().addListener(() -> Platform.runLater(() -> {
+            peaks.repaint();
+            average.repaint();
+            maxHold.repaint();
+            live.repaint();
+        }));
     }
 
-    private static HBox buildChip(String label, Color color, ModelValueBoolean visible) {
-        Circle dot = new Circle(5, color);
+    /** Bundle of "the chip's HBox" + "how to repaint its dot". */
+    private record Chip(HBox box, Runnable repaint) {}
+
+    private static Chip buildChip(String label, Supplier<Color> colorSupplier, ModelValueBoolean visible) {
+        Circle dot = new Circle(5, colorSupplier.get());
         Label text = new Label(label);
         text.getStyleClass().add("legend-chip-label");
         HBox chip = new HBox(5, dot, text);
@@ -66,6 +87,8 @@ public final class LegendOverlay extends HBox {
         };
         visible.addListener(() -> Platform.runLater(refresh));
         refresh.run();
-        return chip;
+
+        Runnable repaint = () -> dot.setFill(colorSupplier.get());
+        return new Chip(chip, repaint);
     }
 }

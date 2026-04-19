@@ -127,7 +127,27 @@ public final class MainWindow {
         waterfall.setSpectrumPaletteStart(settings.getSpectrumPaletteStart().getValue());
         waterfall.setSpectrumPaletteSize(Math.max(1, settings.getSpectrumPaletteSize().getValue()));
 
+        // Apply the user's palette pick to both the live waterfall and the
+        // persistent display, then keep them in sync when the user picks a
+        // new theme from the Display tab. Persistent display lives behind a
+        // controller wrapper, so we use that wrapper's setter.
+        applyWaterfallTheme();
+        settings.getWaterfallTheme().addListener(() -> Platform.runLater(this::applyWaterfallTheme));
+
         engine.addFrameConsumer(this::onNewFrameOffFx);
+    }
+
+    /**
+     * Push the currently selected {@link jspectrumanalyzer.ui.WaterfallPalette}
+     * to both the rolling waterfall and the persistent-display heatmap. Cheap
+     * - the palette LUT is pre-baked at construction; the controllers just
+     * swap the reference.
+     */
+    private void applyWaterfallTheme() {
+        jspectrumanalyzer.ui.ColorPalette palette =
+                settings.getWaterfallTheme().getValue().create();
+        waterfall.setPalette(palette);
+        persistent.setPalette(palette);
     }
 
     public void show(Stage stage) {
