@@ -101,12 +101,14 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValueBoolean spurRemoval = new ModelValueBoolean("Spur Removal", false);
     private final ModelValueBoolean waterfallVisible = new ModelValueBoolean("Waterfall Visible", true);
 
-    // Visual theme selection. Both default to the look this build shipped
-    // with so first-time users see no surprise; switching either combo in the
-    // Display tab live-updates the corresponding view without restarting the
-    // sweep. Themes are independent: pick any combination of graph + waterfall.
+    // Visual theme selection. Cool Pulse is the default because its calm
+    // cyan/blue palette plus the alpha-pulse max-hold effect reads cleanest
+    // on first launch and matches the modern look users requested. Switching
+    // either combo in the Display tab live-updates the corresponding view
+    // without restarting the sweep. Themes are independent: pick any
+    // combination of graph + waterfall.
     private final ModelValue<GraphTheme> graphTheme =
-            new ModelValue<>("Graph Theme", GraphTheme.CLASSIC);
+            new ModelValue<>("Graph Theme", GraphTheme.COOL_PULSE);
     private final ModelValue<WaterfallPalette> waterfallTheme =
             new ModelValue<>("Waterfall Theme", WaterfallPalette.HOT_IRON_BLUE);
 

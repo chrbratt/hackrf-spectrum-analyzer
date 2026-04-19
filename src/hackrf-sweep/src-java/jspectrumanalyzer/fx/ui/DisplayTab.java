@@ -125,17 +125,22 @@ public final class DisplayTab extends ScrollPane {
 
     /**
      * ComboBox of every CSV under {@code freq/}. Picking an entry installs
-     * its {@link FrequencyAllocationTable} in the model; the overlay canvas
-     * picks the change up via its own listener and repaints. The list is
-     * loaded lazily so a missing index file doesn't crash the tab.
+     * its {@link FrequencyAllocationTable} in the model AND auto-enables the
+     * overlay - the previous behaviour required the user to also tick "Show
+     * overlay", which made it look like the country picker did nothing.
+     * Selecting "(None)" clears the table without touching the visibility
+     * flag so users can hide the overlay temporarily without losing the
+     * country selection.
      */
     private ComboBox<NamedTable> buildAllocationCombo() {
         ComboBox<NamedTable> combo = new ComboBox<>();
+        combo.getItems().add(NamedTable.NONE);
         combo.getItems().addAll(loadTables());
         combo.setMaxWidth(Double.MAX_VALUE);
         FxControls.withTooltip(combo,
-                "Country / region whose allocation bands will be drawn on the chart "
-                + "when the overlay is enabled. Add your own CSV under src/hackrf-sweep/freq.");
+                "Country / region whose allocation bands will be drawn on the chart. "
+                + "Picking a country auto-enables the overlay above. "
+                + "Add your own CSV under src/hackrf-sweep/freq.");
 
         FrequencyAllocationTable current = settings.getFrequencyAllocationTable().getValue();
         if (current != null) {
@@ -145,9 +150,20 @@ public final class DisplayTab extends ScrollPane {
                     break;
                 }
             }
+        } else {
+            combo.getSelectionModel().select(NamedTable.NONE);
         }
-        combo.valueProperty().addListener((obs, o, n) ->
-                settings.getFrequencyAllocationTable().setValue(n == null ? null : n.table));
+        combo.valueProperty().addListener((obs, o, n) -> {
+            FrequencyAllocationTable table = (n == null) ? null : n.table;
+            settings.getFrequencyAllocationTable().setValue(table);
+            // Auto-enable when a real table is picked so the user doesn't
+            // have to hunt for the checkbox above. A non-null table with the
+            // overlay off was the #1 source of "country picker does nothing"
+            // confusion.
+            if (table != null && !settings.isFrequencyAllocationVisible().getValue()) {
+                settings.isFrequencyAllocationVisible().setValue(true);
+            }
+        });
         return combo;
     }
 
@@ -161,16 +177,40 @@ public final class DisplayTab extends ScrollPane {
         } catch (Exception ex) {
             LOG.warn("Could not load allocation tables", ex);
         }
+        // Sort case-insensitively so the dropdown reads alphabetically
+        // regardless of file-system collation. NONE stays at the top via
+        // the explicit prepend in the caller.
+        result.sort((a, b) -> a.label.compareToIgnoreCase(b.label));
         return result;
     }
 
+    /**
+     * Strip the .csv extension and any "x " / "- " sort-order prefixes that
+     * crept into legacy file names so the combo shows clean country names.
+     * Also appends the band count so users can spot empty / partial tables
+     * at a glance.
+     */
     private static String prettify(String csvFileName) {
         String s = csvFileName;
         if (s.toLowerCase().endsWith(".csv")) s = s.substring(0, s.length() - 4);
-        return s.trim();
+        s = s.trim();
+        // "x USA" / "x Europe": leading "x " was used to push the file to
+        // the bottom of an alphabetical sort. Drop it; the combo now sorts
+        // case-insensitively in code.
+        if (s.length() > 2 && (s.startsWith("x ") || s.startsWith("X "))) {
+            s = s.substring(2).trim();
+        }
+        // "- Slovakia": leading "- " was used to push the file to the top.
+        if (s.startsWith("- ") || s.startsWith("\u2013 ")) {
+            s = s.substring(2).trim();
+        }
+        return s;
     }
 
     private static final class NamedTable {
+        /** Sentinel used by the combo to mean "no allocation table loaded". */
+        static final NamedTable NONE = new NamedTable("(None)", null);
+
         final String label;
         final FrequencyAllocationTable table;
 
@@ -180,7 +220,10 @@ public final class DisplayTab extends ScrollPane {
         }
 
         @Override
-        public String toString() { return label; }
+        public String toString() {
+            if (table == null) return label;
+            return label + "  (" + table.size() + " bands)";
+        }
     }
 
     /**

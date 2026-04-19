@@ -28,6 +28,10 @@ import jspectrumanalyzer.fx.util.FxControls;
 public final class ScanTab extends ScrollPane {
 
     private static final int[] RBW_PRESETS_KHZ = {10, 50, 100, 250, 500, 1000};
+    // Powers of two from 4k to 128k - the only values libhackrf actually
+    // accepts for the FFT size, and the most common ones users reach for
+    // when trading "fast sweep" against "low noise floor / fine bins".
+    private static final int[] FFT_PRESETS_SAMPLES = {4096, 8192, 16384, 32768, 65536, 131072};
 
     private final SettingsStore settings;
     private final FrequencyRangeValidator validator =
@@ -66,7 +70,8 @@ public final class ScanTab extends ScrollPane {
                                 FxControls.withTooltip(
                                         FxControls.intSpinner(settings.getSamples(), 1024, 131072, 1024),
                                         "FFT size per tuning step. More samples = better noise floor "
-                                        + "and finer effective bandwidth, at the cost of CPU."))),
+                                        + "and finer effective bandwidth, at the cost of CPU.")),
+                        buildFftPresets()),
                 FxControls.section("Gain",
                         FxControls.labeled("LNA gain (dB, 8 dB steps)",
                                 FxControls.withTooltip(
@@ -188,6 +193,33 @@ public final class ScanTab extends ScrollPane {
             chips.getChildren().add(chip);
         }
         return chips;
+    }
+
+    /**
+     * Quick-pick chips for FFT size (Samples). Mirrors the RBW chip row so
+     * users can get to the common values without having to step the spinner
+     * 64x or remember whether libhackrf wants 32k or 32768.
+     */
+    private FlowPane buildFftPresets() {
+        FlowPane chips = new FlowPane(4, 4);
+        chips.getChildren().add(presetLabel("FFT size:"));
+        for (int n : FFT_PRESETS_SAMPLES) {
+            Button chip = new Button(formatFftLabel(n));
+            chip.getStyleClass().add("preset-chip");
+            FxControls.withTooltip(chip, "Set FFT size to " + n + " samples.");
+            chip.setOnAction(e -> settings.getSamples().setValue(n));
+            chips.getChildren().add(chip);
+        }
+        return chips;
+    }
+
+    private static String formatFftLabel(int samples) {
+        // Render in "k" units once we hit 1024 so the chip stays narrow:
+        // 4096 -> "4k", 65536 -> "64k", 131072 -> "128k".
+        if (samples >= 1024 && samples % 1024 == 0) {
+            return (samples / 1024) + "k";
+        }
+        return Integer.toString(samples);
     }
 
     private static Label presetLabel(String text) {

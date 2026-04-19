@@ -39,6 +39,12 @@ public class FrequencyAllocationTable {
 		return area;
 	}
 	
+	/** Total number of bands in the table. Used by the UI to surface
+	 *  table size next to the country name in the picker. */
+	public int size() {
+		return frequencyBands.size();
+	}
+
 	public ArrayList<FrequencyBand> getFrequencyBands(long startHz, long endHz){
 		FrequencyBand startBand	= lookupBand(startHz);
 		ArrayList<FrequencyBand> bands	= new ArrayList<>();

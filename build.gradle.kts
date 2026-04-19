@@ -296,7 +296,21 @@ tasks.register<Exec>("jpackageWinApp") {
     description = "Produce a self-contained Windows app-image (folder, no installer)."
     dependsOn("stageJpackageInput")
     onlyIf { isWindows() }
-    doFirst { layout.buildDirectory.dir("jpackage").get().asFile.mkdirs() }
+    doFirst {
+        // jpackage refuses to overwrite an existing app-image directory and
+        // exits non-zero ("Application destination directory ... already
+        // exists"). Wipe just our own output folder so re-running the task
+        // is idempotent without nuking other build artifacts.
+        val outDir = layout.buildDirectory.dir("jpackage").get().asFile
+        val appDir = outDir.resolve("HackRF Spectrum Analyzer")
+        if (appDir.exists()) {
+            logger.lifecycle("Removing previous app-image at $appDir")
+            check(appDir.deleteRecursively()) {
+                "Could not delete $appDir - close any running instance of the app and retry."
+            }
+        }
+        outDir.mkdirs()
+    }
     // Pure GUI launch - no console window. If you ever need to see stdout/
     // stderr during development, append `--win-console` to the command line
     // below or run the app via `./gradlew run` instead.
@@ -308,6 +322,33 @@ tasks.register<Exec>("jpackageWinMsi") {
     description = "Produce a Windows MSI via jpackage (requires WiX Toolset on PATH)."
     dependsOn("stageJpackageInput")
     onlyIf { isWindows() }
-    doFirst { layout.buildDirectory.dir("jpackage").get().asFile.mkdirs() }
+    doFirst {
+        // Surface the WiX requirement up-front with an actionable message so
+        // users don't have to decode jpackage's "Invalid or unsupported type:
+        // [msi]" error (which is what jpackage prints when WiX is missing).
+        val wixOnPath = ProcessBuilder("where", "wix")
+            .redirectErrorStream(true).start().also { it.waitFor() }.exitValue() == 0
+        val lightOnPath = ProcessBuilder("where", "light")
+            .redirectErrorStream(true).start().also { it.waitFor() }.exitValue() == 0
+        check(wixOnPath || lightOnPath) {
+            "WiX Toolset is required for MSI packaging but was not found on PATH.\n" +
+            "  Install with one of:\n" +
+            "    winget install WiXToolset.WiXToolset\n" +
+            "    choco install wixtoolset\n" +
+            "  or download WiX 3.x from https://wixtoolset.org and add its bin/ folder to PATH.\n" +
+            "  Then re-run: ./gradlew jpackageWinMsi\n" +
+            "  (For a no-installer build that has no WiX dependency, use ./gradlew jpackageWinApp instead.)"
+        }
+        // Same idempotency cleanup as the app-image task: delete any previous
+        // MSI so re-running doesn't leave stale artifacts around.
+        val outDir = layout.buildDirectory.dir("jpackage").get().asFile
+        val version = (project.version as String).removeSuffix("-SNAPSHOT")
+        val msi = outDir.resolve("HackRF Spectrum Analyzer-$version.msi")
+        if (msi.exists()) {
+            logger.lifecycle("Removing previous MSI at $msi")
+            msi.delete()
+        }
+        outDir.mkdirs()
+    }
     commandLine = jpackageCommand("msi")
 }

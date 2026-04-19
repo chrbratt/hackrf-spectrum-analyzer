@@ -5,9 +5,9 @@
  */
 
 .root {
-    -fx-base: #1b1b1b;
-    -fx-background: #121212;
-    -fx-control-inner-background: #1e1e1e;
+    -fx-base: #232327;
+    -fx-background: #1b1b1f;
+    -fx-control-inner-background: #232327;
     -fx-accent: #5BE572;
     -fx-focus-color: #5BE572;
     -fx-faint-focus-color: #5BE57233;
@@ -27,7 +27,7 @@
 .combo-box,
 .spinner,
 .choice-box {
-    -fx-background-color: #1e1e1e;
+    -fx-background-color: #26262b;
     -fx-text-fill: #f0f0f0;
     -fx-prompt-text-fill: #888;
     -fx-border-color: #3a3a3a;
@@ -107,7 +107,7 @@
 }
 
 .check-box .box {
-    -fx-background-color: #1e1e1e;
+    -fx-background-color: #26262b;
     -fx-border-color: #4a4a4a;
     -fx-border-radius: 3;
     -fx-background-radius: 3;
@@ -143,16 +143,16 @@
 }
 
 .tab-pane .tab-header-background {
-    -fx-background-color: #121212;
+    -fx-background-color: #1b1b1f;
 }
 
 .tab-pane .tab {
-    -fx-background-color: #1e1e1e;
+    -fx-background-color: #26262b;
     -fx-padding: 4 12 4 12;
 }
 
 .tab-pane .tab:selected {
-    -fx-background-color: #2a2a2a;
+    -fx-background-color: #32323a;
     -fx-border-color: -fx-accent transparent transparent transparent;
     -fx-border-width: 2 0 0 0;
 }
@@ -169,7 +169,7 @@
 }
 
 .status-bar {
-    -fx-background-color: #0b0b0b;
+    -fx-background-color: #16161a;
     -fx-padding: 4 8 4 8;
     -fx-border-color: #3a3a3a transparent transparent transparent;
     -fx-border-width: 1 0 0 0;
@@ -194,8 +194,8 @@
 }
 
 .chart-toolbar {
-    -fx-background-color: #161616;
-    -fx-border-color: transparent transparent #2a2a2a transparent;
+    -fx-background-color: #1f1f24;
+    -fx-border-color: transparent transparent #2f2f35 transparent;
     -fx-border-width: 0 0 1 0;
 }
 
@@ -252,8 +252,8 @@
 }
 
 .frequency-range-selector {
-    -fx-background-color: #121212;
-    -fx-border-color: #2a2a2a;
+    -fx-background-color: #1b1b1f;
+    -fx-border-color: #32323a;
     -fx-border-radius: 4;
     -fx-background-radius: 4;
 }

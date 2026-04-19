@@ -4,6 +4,7 @@ import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.GradientPaint;
+import java.awt.Paint;
 import java.awt.geom.Rectangle2D;
 import java.text.DecimalFormat;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -90,7 +91,7 @@ public final class SpectrumChart {
      * the plot so a theme switch propagates without us having to re-create
      * the renderers or the axis. Mutated only on the FX thread.
      */
-    private GraphTheme.Spec currentSpec = GraphTheme.CLASSIC.spec();
+    private GraphTheme.Spec currentSpec = GraphTheme.COOL_PULSE.spec();
 
     private Rectangle2D lastDataArea = new Rectangle2D.Double(0, 0, 1, 1);
 
@@ -335,7 +336,13 @@ public final class SpectrumChart {
             // series and re-apply per-index paint each frame.
             if (frame.showPeaks) {
                 lineDataset.addSeries(ds.createPeaksDataset("peaks"));
-                lineRenderer.setSeriesPaint(lineIndex++, currentSpec.peaks());
+                // Strength gradient (when the theme has one): the line takes
+                // its colour from the gradient at each pixel's Y position,
+                // so a peak that climbs above the noise floor visibly shifts
+                // hue on the way up. Falls back to the flat peak colour for
+                // themes that opted out (CLASSIC, HIGH_CONTRAST).
+                lineRenderer.setSeriesPaint(lineIndex++,
+                        strengthPaintOr(currentSpec.peaks(), 255));
             }
             if (frame.showAverage) {
                 lineDataset.addSeries(ds.createAverageDataset("average"));
@@ -355,14 +362,16 @@ public final class SpectrumChart {
             }
             if (frame.showRealtime) {
                 areaDataset.addSeries(ds.createSpectrumDataset("spectrum"));
-                // Fill colour (translucent realtime hue) and on-top outline
-                // (full-opacity realtime hue) keep the live trace readable
+                // Fill colour (translucent gradient/hue) and on-top outline
+                // (full-opacity gradient/hue) keep the live trace readable
                 // while still giving the modern "spectrogram halo" effect.
+                // The gradient maps signal strength -> colour so loud peaks
+                // visibly switch hue as they punch above the noise floor.
                 Color rt = currentSpec.realtime();
-                Color fill = new Color(rt.getRed(), rt.getGreen(), rt.getBlue(),
-                        currentSpec.realtimeFillAlpha());
+                Paint fill = strengthPaintOr(rt, currentSpec.realtimeFillAlpha());
+                Paint outline = strengthPaintOr(rt, 255);
                 areaRenderer.setSeriesPaint(0, fill);
-                areaRenderer.setSeriesOutlinePaint(0, rt);
+                areaRenderer.setSeriesOutlinePaint(0, outline);
             }
         } finally {
             chart.setNotify(true);
@@ -373,6 +382,49 @@ public final class SpectrumChart {
      *  the same paint values the chart is currently using. */
     public GraphTheme.Spec currentSpec() {
         return currentSpec;
+    }
+
+    /**
+     * Build a vertical {@link GradientPaint} that maps signal strength to
+     * colour using the active theme's {@code strengthLow} (at the noise
+     * floor) and {@code strengthHigh} (at strong-signal level). The paint
+     * uses absolute pixel coordinates derived from the chart's current data
+     * area, so each pixel of a trace picks its colour from the gradient
+     * based on its Y position.
+     *
+     * <p>Returns the supplied {@code fallback} colour (with optional alpha)
+     * when the active theme has no gradient defined or when the data area
+     * isn't measurable yet (first paint). Callers stay paint-agnostic: the
+     * renderer accepts both {@link Color} and {@link GradientPaint}.
+     */
+    private Paint strengthPaintOr(Color fallback, int alpha) {
+        if (!currentSpec.hasStrengthGradient()) {
+            return withAlpha(fallback, alpha);
+        }
+        Rectangle2D area = lastDataArea;
+        if (area.getHeight() < 4) {
+            return withAlpha(fallback, alpha);
+        }
+        // Map dBm -> pixel Y. The Y axis is fixed at [Y_MIN_DBM, Y_MAX_DBM]
+        // and the data area is the chart's actual painted plot rect, so:
+        //   yPixel = areaTop + (Y_MAX_DBM - dBm) / (Y_MAX_DBM - Y_MIN_DBM) * areaHeight
+        float span = Y_MAX_DBM - Y_MIN_DBM;
+        float yStrong = (float) (area.getY()
+                + (Y_MAX_DBM - GraphTheme.STRENGTH_STRONG_DBM) / span * area.getHeight());
+        float yNoise  = (float) (area.getY()
+                + (Y_MAX_DBM - GraphTheme.STRENGTH_NOISE_DBM)  / span * area.getHeight());
+        Color high = withAlpha(currentSpec.strengthHigh(), alpha);
+        Color low  = withAlpha(currentSpec.strengthLow(),  alpha);
+        // cyclic=false (last arg implicit): pixels above yStrong clamp to
+        // `high`, pixels below yNoise clamp to `low`. That's exactly what
+        // the user wants - no surprise wrap-around past the floor / ceiling.
+        return new GradientPaint(0f, yStrong, high, 0f, yNoise, low);
+    }
+
+    private static Color withAlpha(Color c, int alpha) {
+        if (alpha >= 255) return c;
+        if (alpha <= 0) return new Color(c.getRed(), c.getGreen(), c.getBlue(), 0);
+        return new Color(c.getRed(), c.getGreen(), c.getBlue(), alpha);
     }
 
     public void setSpectrumLineThickness(float thickness) {

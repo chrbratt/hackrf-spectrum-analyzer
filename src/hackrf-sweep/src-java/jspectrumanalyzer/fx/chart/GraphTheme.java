@@ -21,33 +21,36 @@ public enum GraphTheme {
     /**
      * The look this app shipped with: bright primary trace colours on a near-
      * black gradient, max-hold drops back to the live sample the moment its
-     * lifetime expires (no decay animation). This is the default.
+     * lifetime expires (no decay animation). No strength-mapped gradient -
+     * the original users wanted a flat, predictable trace colour.
      */
     CLASSIC("Classic", new Spec(
-            new Color(0x5BE572),  // peaks   - green
-            new Color(0xF4C45A),  // average - amber
-            new Color(0xFF6B6B),  // max-hold- coral red
-            new Color(0x7BB6FF),  // realtime- cool blue
-            new Color(0x14, 0x14, 0x1C),  // background top
-            new Color(0x0A, 0x0A, 0x10),  // background bottom
-            new Color(255, 255, 255, 28), // grid (~11% white)
-            new Color(255, 255, 255, 80), // crosshair (~31% white)
-            new Color(255, 255, 255, 60), // axis line
-            new Color(0xC8, 0xC8, 0xD0),  // axis labels
-            new Color(0xE6, 0xE6, 0xEC),  // chart title
-            70,                            // realtime fill alpha (0-255)
-            MaxHoldEffect.NONE)),
+            new Color(0x5BE572),
+            new Color(0xF4C45A),
+            new Color(0xFF6B6B),
+            new Color(0x7BB6FF),
+            new Color(0x14, 0x14, 0x1C),
+            new Color(0x0A, 0x0A, 0x10),
+            new Color(255, 255, 255, 28),
+            new Color(255, 255, 255, 80),
+            new Color(255, 255, 255, 60),
+            new Color(0xC8, 0xC8, 0xD0),
+            new Color(0xE6, 0xE6, 0xEC),
+            70,
+            MaxHoldEffect.NONE,
+            null, null)),
 
     /**
      * Warm "thermal camera" palette - deep red max-hold visibly cools down to
-     * orange/yellow as it ages out, so old peaks read as "stale" before they
-     * disappear entirely. Realtime gets a slightly warmer fill for cohesion.
+     * orange/yellow as it ages out. Strength gradient: orange at the noise
+     * floor ramping to white-hot at strong-signal levels, mirroring the way
+     * a real thermal sensor presents temperature.
      */
     HEATMAP("Heatmap", new Spec(
-            new Color(0x8AE07A),  // peaks   - warm green
-            new Color(0xF0A040),  // average - tangerine
-            new Color(0xFF3030),  // max-hold- saturated red (start of cool-down ramp)
-            new Color(0xFFB070),  // realtime- amber
+            new Color(0x8AE07A),
+            new Color(0xF0A040),
+            new Color(0xFF3030),
+            new Color(0xFFB070),
             new Color(0x18, 0x10, 0x0E),
             new Color(0x0A, 0x06, 0x06),
             new Color(255, 200, 150, 30),
@@ -56,19 +59,22 @@ public enum GraphTheme {
             new Color(0xE0, 0xC8, 0xB0),
             new Color(0xFF, 0xE6, 0xD0),
             70,
-            MaxHoldEffect.VALUE_FADE)),
+            MaxHoldEffect.VALUE_FADE,
+            new Color(0xC8, 0x50, 0x10),   // strengthLow  - dim orange (noise floor)
+            new Color(0xFF, 0xF0, 0xC0))), // strengthHigh - white-hot (strong)
 
     /**
      * Cool monochromatic theme - everything sits in the cyan/blue/teal range
      * so the eye reads the chart as one calm signal field. Max-hold "pulses"
-     * out: value stays put, the line just fades + shifts hue toward the
-     * background, then disappears at lifetime end.
+     * out. Strength gradient: deep ocean blue at noise floor ramping to icy
+     * cyan at strong-signal levels, so the eye instinctively reads "louder
+     * = brighter" without leaving the cool palette.
      */
     COOL_PULSE("Cool Pulse", new Spec(
-            new Color(0x70E0E0),  // peaks   - cyan
-            new Color(0xA0D8FF),  // average - icy blue
-            new Color(0x80B0FF),  // max-hold- soft sky blue
-            new Color(0x60C0E0),  // realtime- aqua
+            new Color(0x70E0E0),
+            new Color(0xA0D8FF),
+            new Color(0x80B0FF),
+            new Color(0x60C0E0),
             new Color(0x10, 0x14, 0x1C),
             new Color(0x06, 0x08, 0x10),
             new Color(180, 220, 255, 28),
@@ -77,18 +83,21 @@ public enum GraphTheme {
             new Color(0xC0, 0xD8, 0xE8),
             new Color(0xE0, 0xF0, 0xFF),
             55,
-            MaxHoldEffect.ALPHA_PULSE)),
+            MaxHoldEffect.ALPHA_PULSE,
+            new Color(0x20, 0x40, 0x80),   // strengthLow  - deep blue
+            new Color(0xC0, 0xF0, 0xFF))), // strengthHigh - icy cyan-white
 
     /**
      * No-frills theme for screenshots / printouts: pure black background,
-     * fully opaque primary trace colours, no fade animation, no realtime fill
-     * gradient. What you see is exactly what gets archived.
+     * fully opaque primary trace colours, no fade animation, no strength
+     * gradient (a screenshot needs to read the same regardless of where the
+     * peaks happen to land vertically).
      */
     HIGH_CONTRAST("High Contrast", new Spec(
-            new Color(0x00FF60),  // peaks   - vivid green
-            new Color(0xFFE000),  // average - vivid yellow
-            new Color(0xFF2040),  // max-hold- vivid red
-            new Color(0x40C0FF),  // realtime- vivid blue
+            new Color(0x00FF60),
+            new Color(0xFFE000),
+            new Color(0xFF2040),
+            new Color(0x40C0FF),
             Color.BLACK,
             Color.BLACK,
             new Color(255, 255, 255, 50),
@@ -96,8 +105,9 @@ public enum GraphTheme {
             new Color(255, 255, 255, 100),
             new Color(0xFF, 0xFF, 0xFF),
             new Color(0xFF, 0xFF, 0xFF),
-            0,                              // no realtime fill - just the line
-            MaxHoldEffect.NONE));
+            0,
+            MaxHoldEffect.NONE,
+            null, null));
 
     private final String displayName;
     private final Spec spec;
@@ -138,6 +148,13 @@ public enum GraphTheme {
      * Immutable bundle of every colour + behaviour knob the chart needs.
      * Defining it as a {@code record} means a theme change is a simple field
      * read and never accidentally aliases mutable state across themes.
+     *
+     * <p>{@code strengthLow} / {@code strengthHigh} are optional. When both
+     * are set the chart paints peaks + realtime with a vertical gradient
+     * spanning {@link #STRENGTH_NOISE_DBM} (noise floor) at {@code low} to
+     * {@link #STRENGTH_STRONG_DBM} (loud signal) at {@code high}. When either
+     * is null the renderer falls back to the flat {@code peaks} / {@code
+     * realtime} colours.
      */
     public record Spec(
             Color peaks,
@@ -152,7 +169,13 @@ public enum GraphTheme {
             Color label,
             Color title,
             int realtimeFillAlpha,
-            MaxHoldEffect maxHoldEffect) {
+            MaxHoldEffect maxHoldEffect,
+            Color strengthLow,
+            Color strengthHigh) {
+
+        public boolean hasStrengthGradient() {
+            return strengthLow != null && strengthHigh != null;
+        }
 
         public javafx.scene.paint.Color peaksFx()    { return toFx(peaks); }
         public javafx.scene.paint.Color averageFx()  { return toFx(average); }
@@ -163,4 +186,14 @@ public enum GraphTheme {
             return javafx.scene.paint.Color.rgb(c.getRed(), c.getGreen(), c.getBlue());
         }
     }
+
+    /** Bottom of the strength gradient ("noise floor"). Anything weaker
+     *  clamps to {@code strengthLow}. Picked to match a typical HackRF
+     *  noise floor with the internal LNA on. */
+    public static final float STRENGTH_NOISE_DBM = -90f;
+
+    /** Top of the strength gradient ("loud signal"). Anything stronger
+     *  clamps to {@code strengthHigh}. Picked so a Wi-Fi / FM beacon a few
+     *  metres from the antenna lands solidly in the bright zone. */
+    public static final float STRENGTH_STRONG_DBM = -50f;
 }

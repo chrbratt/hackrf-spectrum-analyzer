@@ -2,16 +2,19 @@ package jspectrumanalyzer.fx.chart;
 
 import java.awt.Color;
 import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.util.Arrays;
 
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.embed.swing.SwingFXUtils;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.WritableImage;
 import javafx.scene.paint.Paint;
+import javafx.util.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jspectrumanalyzer.core.DatasetSpectrum;
@@ -93,11 +96,28 @@ public final class WaterfallCanvas extends Canvas {
 
     private volatile DatasetSpectrum lastSpectrum;
 
+    /**
+     * Debounce timer for buffer reallocation. Resize events fire every frame
+     * during a SplitPane drag (30+ per second); reallocating + NN-rescaling
+     * the history buffer that often compounds rounding errors and tanks
+     * frame rate. We instead schedule a single reallocation ~150 ms after
+     * the last resize event, and during the pause `paint()` just stretches
+     * the existing buffer to fit. Lives on the FX thread (FX-only API).
+     */
+    private static final Duration RESIZE_DEBOUNCE = Duration.millis(150);
+    private final PauseTransition resizeDebouncer = new PauseTransition(RESIZE_DEBOUNCE);
+    private int pendingWidth = MIN_BUFFER_WIDTH;
+    private int pendingHeight = MIN_BUFFER_HEIGHT;
+
     public WaterfallCanvas() {
         super(320, 200);
-        allocateBuffers(MIN_BUFFER_WIDTH, MIN_BUFFER_HEIGHT);
+        allocateBuffers(MIN_BUFFER_WIDTH, MIN_BUFFER_HEIGHT, null);
         widthProperty().addListener((obs, o, n) -> resizeBuffers());
         heightProperty().addListener((obs, o, n) -> resizeBuffers());
+        // When the debounce timer fires we promote the latest pending size
+        // to a real reallocation. NN-scaling preserves the visible history
+        // instead of clearing to black on every resize.
+        resizeDebouncer.setOnFinished(e -> applyPendingResize());
     }
 
     @Override
@@ -257,28 +277,71 @@ public final class WaterfallCanvas extends Canvas {
 
         BufferedImage source = bufferedImages[drawIndex];
         fxImage = SwingFXUtils.toFXImage(source, fxImage);
-        // 1:1 paste at the chart's data area. Stretching the buffer to a
-        // different chartWidth would introduce horizontal blur/banding.
+        // Stretch the buffer horizontally to the current chart-data width
+        // and vertically to the current canvas height. During a debounced
+        // resize the buffer's native size lags the chart by up to ~150 ms;
+        // stretching here keeps the history visible at the right footprint
+        // until the deferred allocateBuffers() copies it into a fresh
+        // properly-sized buffer. Vertical 1:1 isn't possible (the canvas
+        // height has already changed) so we let JavaFX scale - any one-frame
+        // smear from this paint is gone the next paint, no compounding.
+        int destW = Math.max(1, chartWidth);
+        int destH = (int) Math.round(h);
         gc.drawImage(fxImage, 0, 0, source.getWidth(), source.getHeight(),
-                chartXOffset, 0, source.getWidth(), source.getHeight());
+                chartXOffset, 0, destW, destH);
         if (PERF) paintPerf.record(System.nanoTime() - t0);
     }
 
-    private synchronized void resizeBuffers() {
+    /**
+     * Handle a chart-area or canvas resize. Fires every frame during a
+     * SplitPane drag, so we just record the desired size and (re)start the
+     * debounce timer; the actual buffer reallocation runs once after the
+     * user stops dragging. Until then {@link #paint()} stretches the existing
+     * buffer to fit the new chart width.
+     */
+    private void resizeBuffers() {
         double fxHeight = getHeight();
-        // Buffer width follows the chart's data-area width, not the canvas, so
-        // each spectrum bin maps to one buffer column and paint() stays 1:1.
         int newWidth = Math.max(MIN_BUFFER_WIDTH, chartWidth);
         int newHeight = Math.max(MIN_BUFFER_HEIGHT, (int) Math.round(fxHeight));
-        if (newWidth == bufferWidth && newHeight == bufferHeight) return;
-        allocateBuffers(newWidth, newHeight);
+        if (newWidth == bufferWidth && newHeight == bufferHeight) {
+            // No real change; but if the debounce timer is queued from an
+            // earlier in-flight resize we let it run - cheap and correct.
+            return;
+        }
+        pendingWidth = newWidth;
+        pendingHeight = newHeight;
+        if (Platform.isFxApplicationThread()) {
+            resizeDebouncer.playFromStart();
+        } else {
+            Platform.runLater(resizeDebouncer::playFromStart);
+        }
+        // Repaint immediately so the user sees the buffer track the new
+        // canvas size (stretched) instead of revealing the black background.
         requestPaint();
     }
 
-    private synchronized void allocateBuffers(int newWidth, int newHeight) {
-        // History is intentionally dropped on resize. Scaling the old buffer
-        // produced visible banding/colour smearing while the divider was
-        // dragged; a clean reset is more useful than a distorted past.
+    /**
+     * Promote the latest pending size to a real buffer reallocation. Runs on
+     * the FX thread (PauseTransition handler). Copies the previous buffer
+     * into the new one with nearest-neighbor scaling so visible history is
+     * preserved instead of being wiped.
+     */
+    private synchronized void applyPendingResize() {
+        if (pendingWidth == bufferWidth && pendingHeight == bufferHeight) return;
+        allocateBuffers(pendingWidth, pendingHeight, bufferedImages[drawIndex]);
+        requestPaint();
+    }
+
+    /**
+     * Allocate fresh buffers at the requested size. When {@code previous} is
+     * non-null its contents are copied into the new buffer with NN scaling
+     * (sharp, no smearing) so the user keeps seeing the waterfall history
+     * across resizes. NN is critical here: bilinear scaling repeated 30 times
+     * per second during a drag was the original "banding" that motivated the
+     * legacy "always wipe" behaviour - one-shot NN doesn't compound.
+     */
+    private synchronized void allocateBuffers(int newWidth, int newHeight,
+                                              BufferedImage previous) {
         BufferedImage[] newImages = new BufferedImage[2];
         newImages[0] = GraphicsToolkit.createAcceleratedImageOpaque(newWidth, newHeight);
         newImages[1] = GraphicsToolkit.createAcceleratedImageOpaque(newWidth, newHeight);
@@ -287,6 +350,20 @@ public final class WaterfallCanvas extends Canvas {
             try {
                 g.setColor(Color.BLACK);
                 g.fillRect(0, 0, newWidth, newHeight);
+                if (previous != null) {
+                    // NEAREST_NEIGHBOR: stretches each old pixel column into
+                    // the new column slot without averaging, so colours stay
+                    // exactly what the palette painted them. Vertically we
+                    // copy the top min(oldH, newH) rows untouched so the
+                    // time axis doesn't get squished or stretched (rows = time).
+                    g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                            RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+                    int copyH = Math.min(previous.getHeight(), newHeight);
+                    g.drawImage(previous,
+                            0, 0, newWidth, copyH,
+                            0, 0, previous.getWidth(), copyH,
+                            null);
+                }
             } finally {
                 g.dispose();
             }

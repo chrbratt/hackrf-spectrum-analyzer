@@ -83,18 +83,21 @@ public final class AllocationOverlayCanvas extends Canvas {
         List<FrequencyBand> bands = table.getFrequencyBands(startHz, endHz);
         if (bands.isEmpty()) return;
 
-        // Pre-compute the chart-relative pixel rects so we can decide which
-        // bands have enough horizontal room to fit a label without overdraw.
+        // Pre-compute integer-aligned pixel rects so adjacent bands don't
+        // visually merge or leave 1px gaps from sub-pixel rounding (the old
+        // double-precision rects looked like overlapping smears in dense
+        // areas of the spectrum).
         List<DrawnBand> drawn = new ArrayList<>(bands.size());
         for (FrequencyBand band : bands) {
             double xStart = rfMHzToPixelX(band.getMHzStartIncl(), plan);
             double xEnd = rfMHzToPixelX(band.getMHzEndExcl(), plan);
             if (Double.isNaN(xStart) && Double.isNaN(xEnd)) continue;
-            // Clamp to plot area; bands that overflow on either side just get cut.
             double clampedStart = clampToArea(xStart, true);
             double clampedEnd = clampToArea(xEnd, false);
-            if (clampedEnd - clampedStart < 1) continue;
-            drawn.add(new DrawnBand(band, clampedStart, clampedEnd));
+            int sx = (int) Math.round(clampedStart);
+            int ex = (int) Math.round(clampedEnd);
+            if (ex - sx < 1) continue;
+            drawn.add(new DrawnBand(band, sx, ex));
         }
         if (drawn.isEmpty()) return;
 
@@ -104,20 +107,37 @@ public final class AllocationOverlayCanvas extends Canvas {
         double bandY = dataArea.getY();
         double bandH = Math.min(BAND_HEIGHT, dataArea.getHeight() * 0.5d);
 
+        // First pass: paint all band fills + borders. We do this before any
+        // labels so labels never get covered by a later band's fill.
         for (DrawnBand d : drawn) {
             Color fill = ensureVisibleOnBlack(
                     parseColorOrDefault(d.band.getColor(), Color.GRAY));
             g.setFill(fill.deriveColor(0, 1, 1, FILL_OPACITY));
             g.fillRect(d.start, bandY, d.end - d.start, bandH);
-            // Border drawn in white at low alpha so band edges are visible
-            // even on a black chart background, regardless of fill colour
-            // (the previous black-on-black border was effectively invisible
-            // and tables like "Europe" - all bands #444444 - looked empty).
             g.setStroke(Color.color(1, 1, 1, 0.55));
             g.setLineWidth(1);
             g.strokeRect(d.start, bandY, d.end - d.start, bandH);
+        }
 
-            drawBandLabel(g, font, d, bandY, bandH);
+        // Second pass: labels. Coalesce runs of adjacent bands that share a
+        // name (very common in EFIS data: e.g. Sweden has 12 consecutive
+        // "Sjofartsradio" bands) so the label is drawn once across the
+        // combined span instead of repeated 12 times in unreadable slivers.
+        int i = 0;
+        while (i < drawn.size()) {
+            DrawnBand head = drawn.get(i);
+            int j = i + 1;
+            while (j < drawn.size()
+                    && drawn.get(j).band.getName().equals(head.band.getName())
+                    && drawn.get(j).start <= drawn.get(j - 1).end + 1) {
+                j++;
+            }
+            DrawnBand tail = drawn.get(j - 1);
+            DrawnBand merged = (j - i == 1)
+                    ? head
+                    : new DrawnBand(head.band, head.start, tail.end);
+            drawBandLabel(g, font, merged, bandY, bandH);
+            i = j;
         }
     }
 
@@ -136,22 +156,118 @@ public final class AllocationOverlayCanvas extends Canvas {
         return c.interpolate(Color.WHITE, Math.min(1.0, Math.max(0.0, mix)));
     }
 
+    /**
+     * Render the best-fitting label for a band. Strategy, in order:
+     *   1. Word-wrap the band name into as many lines as the band height
+     *      allows (also splits on '/' so multi-service names break naturally).
+     *   2. If even one wrapped line of the name doesn't fit, fall back to a
+     *      compact frequency tag (e.g. "868 MHz", "2.4 GHz") so the user
+     *      always knows what the colored stripe represents.
+     *   3. If neither name nor frequency tag fits, draw nothing.
+     */
     private void drawBandLabel(GraphicsContext g, Font font, DrawnBand d,
                                 double bandY, double bandH) {
         double w = d.end - d.start;
-        if (w < 12) return;
-        String[] lines = d.band.getName().split("/");
+        if (w < 8) return;
+
         Color textColor = pickReadableTextColor(parseColorOrDefault(d.band.getColor(), Color.GRAY));
         g.setFill(textColor);
 
-        double textX = d.start + TEXT_PADDING;
+        double availW = w - TEXT_PADDING * 2;
+        if (availW <= 0) return;
         double lineHeight = FONT_SIZE + 1;
-        double maxLines = Math.max(1, Math.floor((bandH - TEXT_PADDING) / lineHeight));
-        for (int i = 0; i < lines.length && i < maxLines; i++) {
-            String trimmed = ellipsize(lines[i], font, w - TEXT_PADDING * 2);
-            if (trimmed == null) return;
-            g.fillText(trimmed, textX, bandY + TEXT_PADDING + (i + 1) * lineHeight - 2);
+        int maxLines = Math.max(1, (int) Math.floor((bandH - TEXT_PADDING) / lineHeight));
+
+        List<String> lines = wrapWords(d.band.getName(), font, availW, maxLines);
+        if (lines.isEmpty()) {
+            String fallback = shortFreqLabel(d.band);
+            if (textFits(fallback, font, availW)) {
+                lines = java.util.Collections.singletonList(fallback);
+            } else {
+                return;
+            }
         }
+
+        double textX = d.start + TEXT_PADDING;
+        for (int i = 0; i < lines.size(); i++) {
+            g.fillText(lines.get(i), textX,
+                    bandY + TEXT_PADDING + (i + 1) * lineHeight - 2);
+        }
+    }
+
+    /**
+     * Greedy word-wrap: pack as many whitespace-or-slash-separated tokens as
+     * fit on each line, up to {@code maxLines}. Returns an empty list if not
+     * even the first token (after ellipsis-truncation) fits.
+     */
+    private static List<String> wrapWords(String text, Font font,
+                                          double maxWidth, int maxLines) {
+        List<String> result = new ArrayList<>();
+        if (text == null || text.isEmpty() || maxLines <= 0) return result;
+
+        String[] words = text.split("\\s+|/");
+        Text measurer = new Text();
+        measurer.setFont(font);
+
+        StringBuilder line = new StringBuilder();
+        for (String word : words) {
+            if (word.isEmpty()) continue;
+            String tentative = line.length() == 0 ? word : line + " " + word;
+            measurer.setText(tentative);
+            if (measurer.getLayoutBounds().getWidth() <= maxWidth) {
+                line.setLength(0);
+                line.append(tentative);
+                continue;
+            }
+            // Doesn't fit on the current line.
+            if (line.length() > 0) {
+                result.add(line.toString());
+                line.setLength(0);
+                if (result.size() >= maxLines) return result;
+            }
+            // Try the word on a fresh line.
+            measurer.setText(word);
+            if (measurer.getLayoutBounds().getWidth() <= maxWidth) {
+                line.append(word);
+            } else {
+                String truncated = ellipsize(word, font, maxWidth);
+                if (truncated == null) {
+                    // Single word doesn't fit even after truncation. Return
+                    // whatever we have so far - caller falls back to the
+                    // frequency tag when the result is empty.
+                    return result;
+                }
+                result.add(truncated);
+                if (result.size() >= maxLines) return result;
+            }
+        }
+        if (line.length() > 0 && result.size() < maxLines) {
+            result.add(line.toString());
+        }
+        return result;
+    }
+
+    /**
+     * Compact frequency tag for a band: shown when even one wrapped line of
+     * the name doesn't fit. Picks kHz / MHz / GHz so the number stays short
+     * (max 4-5 visible characters), which is what makes the difference
+     * between "useless overlay sliver" and "I can read it".
+     */
+    private static String shortFreqLabel(FrequencyBand b) {
+        double centerMHz = (b.getMHzStartIncl() + b.getMHzEndExcl()) / 2d;
+        if (centerMHz < 1.0) {
+            return String.format(java.util.Locale.ROOT, "%.0f kHz", centerMHz * 1000d);
+        }
+        if (centerMHz < 1000.0) {
+            return String.format(java.util.Locale.ROOT, "%.0f MHz", centerMHz);
+        }
+        return String.format(java.util.Locale.ROOT, "%.2f GHz", centerMHz / 1000d);
+    }
+
+    private static boolean textFits(String s, Font font, double maxWidth) {
+        Text m = new Text(s);
+        m.setFont(font);
+        return m.getLayoutBounds().getWidth() <= maxWidth;
     }
 
     private double rfMHzToPixelX(double rfMHz, FrequencyPlan plan) {
