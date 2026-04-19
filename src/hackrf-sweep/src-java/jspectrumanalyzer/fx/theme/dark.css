@@ -223,6 +223,20 @@
     -fx-padding: 2 4 2 0;
 }
 
+/* Wi-Fi tab activation badge: lifts the explanation off the panel
+   background and uses the 6 GHz purple from the channel-grid CSV so the
+   colour reads as "Wi-Fi mode" without a separate icon. */
+.wifi-mode-badge {
+    -fx-text-fill: #d8c8ee;
+    -fx-background-color: #2a1f3c;
+    -fx-border-color: #8a4fbd;
+    -fx-border-width: 1;
+    -fx-background-radius: 6;
+    -fx-border-radius: 6;
+    -fx-padding: 8 12 8 12;
+    -fx-font-size: 12px;
+}
+
 .palette-readout {
     -fx-text-fill: #aaa;
     -fx-font-family: "JetBrains Mono", "Consolas", monospace;

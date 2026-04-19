@@ -39,8 +39,10 @@ import jspectrumanalyzer.fx.ui.DisplayTab;
 import jspectrumanalyzer.fx.ui.ParamsTab;
 import jspectrumanalyzer.fx.ui.RecordingTab;
 import jspectrumanalyzer.fx.ui.ScanTab;
+import jspectrumanalyzer.fx.ui.WifiTab;
 import jspectrumanalyzer.nativebridge.HackRFDeviceInfo;
 import jspectrumanalyzer.nativebridge.HackRFSweepNativeBridge;
+import jspectrumanalyzer.wifi.WifiScanService;
 
 /**
  * Main JavaFX window wiring together settings, chart, waterfall, persistent display,
@@ -53,6 +55,7 @@ public final class MainWindow {
 
     private final SettingsStore settings;
     private final SpectrumEngine engine;
+    private final WifiScanService wifiScanService;
 
     private final SpectrumChart spectrumChart;
     private final WaterfallCanvas waterfall;
@@ -78,9 +81,11 @@ public final class MainWindow {
     private final java.util.concurrent.atomic.AtomicBoolean refreshScheduled =
             new java.util.concurrent.atomic.AtomicBoolean(false);
 
-    public MainWindow(SettingsStore settings, SpectrumEngine engine) {
+    public MainWindow(SettingsStore settings, SpectrumEngine engine,
+                      WifiScanService wifiScanService) {
         this.settings = settings;
         this.engine = engine;
+        this.wifiScanService = wifiScanService;
         this.spectrumChart = new SpectrumChart(settings);
         this.waterfall = new WaterfallCanvas();
         this.persistent = new PersistentDisplayController(settings, spectrumChart);
@@ -153,11 +158,19 @@ public final class MainWindow {
     public void show(Stage stage) {
         TabPane tabs = new TabPane();
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+        // Wi-Fi tab is built separately so we can wire its lifecycle to the
+        // matching Tab's selectedProperty - it auto-applies the 2.4 + 5 + 6E
+        // multi-range plan on activate and restores the previous state on
+        // deactivate.
+        WifiTab wifiTab = new WifiTab(settings, wifiScanService);
+        Tab wifiTabHolder = new Tab("Wi-Fi", wifiTab);
+        wifiTab.bindLifecycle(wifiTabHolder.selectedProperty());
         tabs.getTabs().addAll(
                 new Tab("Scan", new ScanTab(settings)),
                 new Tab("Params", new ParamsTab(settings)),
                 new Tab("Display", new DisplayTab(settings)),
-                new Tab("Recording", new RecordingTab(settings)));
+                new Tab("Recording", new RecordingTab(settings)),
+                wifiTabHolder);
 
         Pane waterfallHolder = new Pane(waterfall);
         waterfallHolder.setMinHeight(80);
@@ -279,13 +292,13 @@ public final class MainWindow {
      * Scene-wide accelerators. The single-key bindings (Space / C / W / F5 /
      * Esc) are skipped while a text input is focused so typing frequency or
      * RBW values isn't intercepted; the modifier-based bindings
-     * (Ctrl+1..4) survive even in text fields because they cannot be
+     * (Ctrl+1..5) survive even in text fields because they cannot be
      * confused with regular typing.
      */
     private void installShortcuts(Scene scene, ChartToolbar toolbar,
                                   TabPane tabs, ChartZoomController zoom) {
         scene.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
-            // Modifier shortcuts first so Ctrl+1..4 works even while the
+            // Modifier shortcuts first so Ctrl+1..5 works even while the
             // user is editing a text field (matches every browser/IDE).
             if (e.isControlDown() && !e.isAltDown() && !e.isMetaDown() && !e.isShiftDown()) {
                 int tabIdx = digitIndex(e.getCode());
@@ -320,7 +333,7 @@ public final class MainWindow {
     }
 
     /**
-     * Map {@code KeyCode.DIGIT1..DIGIT4} (and their numpad twins) to a
+     * Map {@code KeyCode.DIGIT1..DIGIT5} (and their numpad twins) to a
      * zero-based tab index. Returns {@code -1} for any other key so the
      * accelerator filter above can fall through to its default branches.
      */
@@ -330,6 +343,7 @@ public final class MainWindow {
             case DIGIT2: case NUMPAD2: return 1;
             case DIGIT3: case NUMPAD3: return 2;
             case DIGIT4: case NUMPAD4: return 3;
+            case DIGIT5: case NUMPAD5: return 4;
             default: return -1;
         }
     }

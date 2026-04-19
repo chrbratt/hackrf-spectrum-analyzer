@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "se.voxo"
-version = "3.0.0-SNAPSHOT"
+version = "4.0.0-SNAPSHOT"
 
 java {
     toolchain {
@@ -85,6 +85,11 @@ dependencies {
     implementation("org.jfree:org.jfree.chart.fx:2.0.1")
     implementation("org.controlsfx:controlsfx:11.2.1")
     implementation("net.java.dev.jna:jna:5.14.0")
+    // jna-platform gives us com.sun.jna.platform.win32.Guid + WTypes for the
+    // Native Wi-Fi (wlanapi.dll) bindings without us having to redeclare GUID
+    // / HANDLE / DWORD by hand. Tiny jar (~1.5 MB) and harmless on non-Windows
+    // platforms - the platform classes are inert until called.
+    implementation("net.java.dev.jna:jna-platform:5.14.0")
 
     // SLF4J on the compile classpath; logback supplies the runtime binding.
     // The application code uses LoggerFactory directly (engine, recorder,
