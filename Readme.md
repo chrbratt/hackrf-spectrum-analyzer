@@ -23,19 +23,24 @@ inside the application jar, so no external resource folder is needed.
 
 ### WiX Toolset (only for `jpackageWinMsi`)
 
-`jpackage --type msi` invokes the WiX 3.x command-line tools. If `candle.exe` /
-`light.exe` are not on `PATH` the build fails with
-`Error: Can not find WiX tools (light.exe)`.
+`jpackage --type msi` invokes the WiX 3.x command-line tools (`candle.exe` /
+`light.exe`). The Gradle task auto-detects WiX in PATH **and** in the
+standard install locations (`C:\Program Files (x86)\WiX Toolset v3.*\bin\`,
+same under `Program Files\`), and prepends the detected directory to the
+jpackage subprocess PATH - so a fresh install works in the same shell
+session, no logout / terminal restart needed.
 
-1. Download **WiX Toolset v3.14** (or later 3.x) from
-   https://github.com/wixtoolset/wix3/releases
-2. Install (default location: `C:\Program Files (x86)\WiX Toolset v3.14\bin`).
-3. Add that `bin` folder to `PATH` and open a fresh PowerShell:
-   ```
-   where.exe candle.exe
-   where.exe light.exe
-   ```
-   Both should print a path. Then re-run `.\gradlew.bat jpackageWinMsi`.
+Install WiX with one of:
+```
+winget install WiXToolset.WiXToolset
+choco install wixtoolset
+```
+or download **WiX Toolset v3.14** (or later 3.x) from
+https://github.com/wixtoolset/wix3/releases and run the installer with
+defaults.
+
+If WiX is missing the build prints exactly which paths were searched and
+how to install it.
 
 > `jpackageWinApp` does **not** need WiX and is a good way to smoke-test the
 > packaged app without touching installer infrastructure.

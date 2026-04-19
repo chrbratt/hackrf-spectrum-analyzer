@@ -291,9 +291,82 @@ tasks.register<Exec>("buildHackrfSweepDll") {
     }
 }
 
+/**
+ * Try to kill any running instance of the packaged executable so its file
+ * handles release before we delete the app-image directory. Only fires
+ * when the user opted in with `-PkillRunning` (default off so we never
+ * surprise-terminate something the user wanted alive). Returns true if
+ * a process was actually killed.
+ */
+fun killRunningExe(exeName: String, logger: org.gradle.api.logging.Logger): Boolean {
+    val tasklist = ProcessBuilder("tasklist", "/FI", "IMAGENAME eq $exeName",
+                                  "/FO", "CSV", "/NH")
+        .redirectErrorStream(true).start()
+    tasklist.waitFor()
+    val output = tasklist.inputStream.bufferedReader().readText()
+    if (!output.contains(exeName, ignoreCase = true)) return false
+
+    logger.lifecycle("Found running $exeName, terminating before rebuild (-PkillRunning)...")
+    val taskkill = ProcessBuilder("taskkill", "/F", "/IM", exeName)
+        .redirectErrorStream(true).start()
+    taskkill.waitFor()
+    // Give Windows a moment to release file handles before the deleteRecursively.
+    Thread.sleep(500)
+    return true
+}
+
+/**
+ * Recursively clear the read-only attribute that jpackage stamps onto
+ * everything in the produced app-image (it does this so end users do not
+ * accidentally modify a deployed install). Java's File.delete on Windows
+ * silently fails on read-only files, which is the most common reason the
+ * old "close the app" error message was misleading: the app was not
+ * running, the files were just read-only.
+ */
+fun clearReadOnlyRecursive(file: File) {
+    if (file.isDirectory) {
+        file.listFiles()?.forEach { clearReadOnlyRecursive(it) }
+    }
+    if (file.exists() && !file.canWrite()) {
+        file.setWritable(true)
+    }
+}
+
+/**
+ * Delete the directory with a small backoff loop so transient locks
+ * (antivirus scanning a freshly written file, Windows Search indexer,
+ * Explorer holding a thumbnail) don't immediately fail the build.
+ *
+ * Sequence: clear read-only attributes -> Java deleteRecursively (3
+ * attempts with growing backoff) -> shell out to `rmdir /S /Q` as last
+ * resort. The shell fallback handles the few corner cases where Java's
+ * File.delete refuses for opaque reasons (long paths, ACL quirks).
+ * Returns true if the directory is gone after all attempts.
+ */
+fun deleteAppImageWithRetries(appDir: File, logger: org.gradle.api.logging.Logger): Boolean {
+    if (!appDir.exists()) return true
+    val attempts = 3
+    for (i in 1..attempts) {
+        clearReadOnlyRecursive(appDir)
+        if (appDir.deleteRecursively() && !appDir.exists()) return true
+        if (i < attempts) {
+            logger.lifecycle("Delete attempt $i for $appDir failed, retrying in ${500L * i}ms...")
+            Thread.sleep(500L * i)
+        }
+    }
+    if (appDir.exists()) {
+        logger.lifecycle("Java delete failed; falling back to 'rmdir /S /Q' for $appDir")
+        val rmdir = ProcessBuilder("cmd", "/c", "rmdir", "/S", "/Q", appDir.absolutePath)
+            .redirectErrorStream(true).start()
+        rmdir.waitFor()
+    }
+    return !appDir.exists()
+}
+
 tasks.register<Exec>("jpackageWinApp") {
     group = "distribution"
-    description = "Produce a self-contained Windows app-image (folder, no installer)."
+    description = "Produce a self-contained Windows app-image (folder, no installer). " +
+                  "Pass -PkillRunning to auto-terminate any running copy first."
     dependsOn("stageJpackageInput")
     onlyIf { isWindows() }
     doFirst {
@@ -305,8 +378,19 @@ tasks.register<Exec>("jpackageWinApp") {
         val appDir = outDir.resolve("HackRF Spectrum Analyzer")
         if (appDir.exists()) {
             logger.lifecycle("Removing previous app-image at $appDir")
-            check(appDir.deleteRecursively()) {
-                "Could not delete $appDir - close any running instance of the app and retry."
+            if (project.hasProperty("killRunning")) {
+                killRunningExe("HackRF Spectrum Analyzer.exe", logger)
+            }
+            check(deleteAppImageWithRetries(appDir, logger)) {
+                "Could not delete $appDir after 3 attempts.\n" +
+                "  Most likely cause: the previously installed app is still running.\n" +
+                "  Fix one of these ways:\n" +
+                "    1. Close the app window manually, then re-run.\n" +
+                "    2. Run:\n" +
+                "         taskkill /F /IM \"HackRF Spectrum Analyzer.exe\"\n" +
+                "       and re-run.\n" +
+                "    3. Re-run with auto-kill:\n" +
+                "         .\\gradlew.bat jpackageWinApp -PkillRunning"
             }
         }
         outDir.mkdirs()
@@ -317,36 +401,94 @@ tasks.register<Exec>("jpackageWinApp") {
     commandLine = jpackageCommand("app-image")
 }
 
+/**
+ * Locate the WiX Toolset bin/ directory. Returns null if WiX cannot be
+ * found anywhere obvious. Order of search:
+ *   1. The current process PATH (fast path; works when WiX was on PATH
+ *      *before* this gradle process started).
+ *   2. The standard WiX 3.x install location from `winget install
+ *      WiXToolset.WiXToolset` or the offline wix3*.exe installer:
+ *        C:\Program Files (x86)\WiX Toolset v3.x\bin\light.exe
+ *      and the same path under "Program Files" for the rare 64-bit msi.
+ *
+ * jpackage on JDK 21 invokes WiX 3.x (light.exe / candle.exe), so we
+ * key the search on light.exe rather than the WiX 4 wix.exe.
+ */
+fun findWixBinDir(): File? {
+    val whereProc = ProcessBuilder("where", "light")
+        .redirectErrorStream(true).start()
+    whereProc.waitFor()
+    if (whereProc.exitValue() == 0) {
+        val first = whereProc.inputStream.bufferedReader().readLine()
+        if (!first.isNullOrBlank()) {
+            val parent = File(first.trim()).parentFile
+            if (parent != null && parent.exists()) return parent
+        }
+    }
+    val roots = listOf(
+        File("C:/Program Files (x86)"),
+        File("C:/Program Files"),
+    )
+    for (root in roots) {
+        val dirs = root.listFiles { f ->
+            f.isDirectory && f.name.startsWith("WiX Toolset v3.")
+        } ?: continue
+        for (dir in dirs) {
+            val light = File(dir, "bin/light.exe")
+            if (light.exists()) return light.parentFile
+        }
+    }
+    return null
+}
+
 tasks.register<Exec>("jpackageWinMsi") {
     group = "distribution"
-    description = "Produce a Windows MSI via jpackage (requires WiX Toolset on PATH)."
+    description = "Produce a Windows MSI via jpackage (auto-detects WiX 3.x)."
     dependsOn("stageJpackageInput")
     onlyIf { isWindows() }
     doFirst {
-        // Surface the WiX requirement up-front with an actionable message so
-        // users don't have to decode jpackage's "Invalid or unsupported type:
-        // [msi]" error (which is what jpackage prints when WiX is missing).
-        val wixOnPath = ProcessBuilder("where", "wix")
-            .redirectErrorStream(true).start().also { it.waitFor() }.exitValue() == 0
-        val lightOnPath = ProcessBuilder("where", "light")
-            .redirectErrorStream(true).start().also { it.waitFor() }.exitValue() == 0
-        check(wixOnPath || lightOnPath) {
-            "WiX Toolset is required for MSI packaging but was not found on PATH.\n" +
+        // Resolve WiX up-front so we can surface a friendly error if it's
+        // missing, and so we can inject its bin/ into PATH for jpackage
+        // (which itself only checks PATH when looking for light.exe).
+        // This makes the build work right after `winget install
+        // WiXToolset.WiXToolset` in the same shell session - the user no
+        // longer has to log out / restart their terminal to pick up the
+        // installer's PATH entry.
+        val wixBin = findWixBinDir()
+        check(wixBin != null) {
+            "WiX Toolset is required for MSI packaging but was not found.\n" +
             "  Install with one of:\n" +
             "    winget install WiXToolset.WiXToolset\n" +
             "    choco install wixtoolset\n" +
-            "  or download WiX 3.x from https://wixtoolset.org and add its bin/ folder to PATH.\n" +
+            "  or download WiX 3.x from https://wixtoolset.org\n" +
+            "  Searched: PATH, plus standard install locations under\n" +
+            "    C:\\Program Files (x86)\\WiX Toolset v3.*\\bin\\\n" +
+            "    C:\\Program Files\\WiX Toolset v3.*\\bin\\\n" +
             "  Then re-run: ./gradlew jpackageWinMsi\n" +
             "  (For a no-installer build that has no WiX dependency, use ./gradlew jpackageWinApp instead.)"
         }
+        logger.lifecycle("Using WiX from: $wixBin")
+        // Prepend WiX to the PATH the jpackage subprocess will inherit.
+        // The Gradle Exec task takes a fresh snapshot of `environment`
+        // before launching, so this only affects the jpackage call.
+        val currentPath = System.getenv("PATH") ?: ""
+        environment("PATH", "${wixBin.absolutePath};$currentPath")
+
         // Same idempotency cleanup as the app-image task: delete any previous
-        // MSI so re-running doesn't leave stale artifacts around.
+        // MSI so re-running doesn't leave stale artifacts around. The MSI
+        // file itself is rarely locked (Windows Installer reads then closes
+        // it), but a single retry handles transient AV-scan locks.
         val outDir = layout.buildDirectory.dir("jpackage").get().asFile
         val version = (project.version as String).removeSuffix("-SNAPSHOT")
         val msi = outDir.resolve("HackRF Spectrum Analyzer-$version.msi")
         if (msi.exists()) {
             logger.lifecycle("Removing previous MSI at $msi")
-            msi.delete()
+            if (!msi.delete()) {
+                Thread.sleep(500)
+                check(msi.delete()) {
+                    "Could not delete $msi - is the file open in another process?"
+                }
+            }
         }
         outDir.mkdirs()
     }
