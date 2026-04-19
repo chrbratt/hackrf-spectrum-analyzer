@@ -56,6 +56,12 @@
     -fx-border-width: 1.5;
 }
 
+.spinner:segment-error,
+.spinner:segment-error .text-field {
+    -fx-border-color: #ff5555;
+    -fx-border-width: 1.5;
+}
+
 .frequency-stepper {
     -fx-background-color: #2a2a2a;
     -fx-text-fill: #f0f0f0;

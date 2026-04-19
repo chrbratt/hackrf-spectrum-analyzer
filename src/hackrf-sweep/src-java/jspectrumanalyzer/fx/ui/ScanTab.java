@@ -137,12 +137,25 @@ public final class ScanTab extends ScrollPane {
      * removing the dead air between them. Lives inside the Frequency
      * section to avoid spending a whole section header on a single combo.
      */
-    private HBox buildMultiRangeRow() {
+    private VBox buildMultiRangeRow() {
         Label caption = new Label("Multi-band:");
-        ComboBox<FrequencyMultiRangePreset> combo = buildMultiRangeCombo();
-        HBox row = new HBox(6, caption, combo);
-        row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+        // The custom editor lives below the combo and only becomes visible
+        // when the user picks the "Custom..." entry. It owns its own
+        // FrequencyPlan and pushes it through the SettingsStore on every
+        // valid edit; the combo just toggles whether the editor is shown.
+        CustomMultiRangeEditor customEditor = new CustomMultiRangeEditor(
+                validator,
+                plan -> settings.getFrequencyPlan().setValue(plan));
+        customEditor.setVisible(false);
+        customEditor.setManaged(false);
+
+        ComboBox<FrequencyMultiRangePreset> combo = buildMultiRangeCombo(customEditor);
+        HBox top = new HBox(6, caption, combo);
+        top.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         HBox.setHgrow(combo, Priority.ALWAYS);
+
+        VBox row = new VBox(6, top, customEditor);
         return row;
     }
 
@@ -152,7 +165,8 @@ public final class ScanTab extends ScrollPane {
      * {@link FrequencyPlan} that drops the gaps between bands and paints
      * separator lines on the spectrum chart.
      */
-    private ComboBox<FrequencyMultiRangePreset> buildMultiRangeCombo() {
+    private ComboBox<FrequencyMultiRangePreset> buildMultiRangeCombo(
+            CustomMultiRangeEditor customEditor) {
         ComboBox<FrequencyMultiRangePreset> combo = new ComboBox<>();
         combo.getItems().addAll(FrequencyMultiRangePreset.defaults());
         // Initial selection mirrors the model: a non-null plan in the store
@@ -171,13 +185,31 @@ public final class ScanTab extends ScrollPane {
         combo.getSelectionModel().select(initial);
         combo.valueProperty().addListener((obs, oldV, newV) -> {
             if (newV == null) return;
-            settings.getFrequencyPlan().setValue(newV.getPlan());
+            boolean custom = (newV == FrequencyMultiRangePreset.CUSTOM);
+            customEditor.setVisible(custom);
+            customEditor.setManaged(custom);
+            if (custom) {
+                // Seed the editor with whatever segments the user already had:
+                // the active multi-range plan (so they can tweak a preset they
+                // just picked), or the current single-range frequency.
+                FrequencyPlan active = settings.getFrequencyPlan().getValue();
+                java.util.List<jspectrumanalyzer.core.FrequencyRange> seed =
+                        (active != null)
+                                ? active.segments()
+                                : java.util.Collections.singletonList(
+                                        settings.getFrequency().getValue());
+                customEditor.seedWith(seed);
+            } else {
+                settings.getFrequencyPlan().setValue(newV.getPlan());
+            }
         });
         FxControls.withTooltip(combo,
                 "Stitch multiple bands into a single chart by removing the dead air "
                 + "between them. Wi-Fi 2.4 + 5 + 6E sweeps three regulatory sub-bands "
                 + "and skips ~2.6 GHz of unused spectrum, so each band gets full "
-                + "horizontal resolution. Pick \"Off\" to go back to a single-range scan.");
+                + "horizontal resolution. Pick \"Custom...\" to define your own "
+                + "segments (max " + FrequencyMultiRangePreset.MAX_CUSTOM_SEGMENTS
+                + ") or \"Off\" to go back to a single-range scan.");
         combo.setMaxWidth(Double.MAX_VALUE);
         return combo;
     }

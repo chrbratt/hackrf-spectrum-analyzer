@@ -14,9 +14,26 @@ import java.util.List;
  */
 public final class FrequencyMultiRangePreset {
 
+    /**
+     * Hard upper bound on the number of segments a custom plan may contain.
+     * libhackrf itself accepts up to {@code MAX_SWEEP_RANGES = 10}; we cap at
+     * 8 so the user keeps a small safety margin and because every extra
+     * segment adds a retune step (~10 ms) that drops the chart's refresh
+     * rate noticeably past 6-8 bands.
+     */
+    public static final int MAX_CUSTOM_SEGMENTS = 8;
+
     /** Sentinel "no multi-range" entry; selecting it clears the active plan. */
     public static final FrequencyMultiRangePreset OFF =
             new FrequencyMultiRangePreset("Off (single range)", null);
+
+    /**
+     * Sentinel "use the custom segment editor" entry. Carries no plan of its
+     * own - the editor below the combo owns the live {@link FrequencyPlan}
+     * while CUSTOM is selected.
+     */
+    public static final FrequencyMultiRangePreset CUSTOM =
+            new FrequencyMultiRangePreset("Custom...", null);
 
     private final String name;
     private final FrequencyPlan plan;
@@ -54,6 +71,7 @@ public final class FrequencyMultiRangePreset {
                         new FrequencyPlan(Arrays.asList(
                                 new FrequencyRange(2400, 2500),
                                 new FrequencyRange(5150, 5895),
-                                new FrequencyRange(5925, 7125))))));
+                                new FrequencyRange(5925, 7125)))),
+                CUSTOM));
     }
 }
