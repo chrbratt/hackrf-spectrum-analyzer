@@ -1,5 +1,6 @@
 package jspectrumanalyzer.fx.model;
 
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import javafx.application.Platform;
@@ -104,6 +105,37 @@ public final class FxModelBinder {
             updating[0] = true;
             try {
                 model.setValue(newV);
+            } finally {
+                updating[0] = false;
+            }
+        });
+        model.addListener(() -> runOnFx(() -> {
+            if (updating[0]) return;
+            updating[0] = true;
+            try {
+                property.setValue(model.getValue());
+            } finally {
+                updating[0] = false;
+            }
+        }));
+    }
+
+    /**
+     * Same as {@link #bindObject(Property, ModelValue)} but routes writes
+     * through a caller-supplied {@code writer} (typically
+     * {@code SdrController::requestRetune}) instead of touching the
+     * model directly. Read direction (model -> property) is unchanged,
+     * so the property still mirrors the published model value once the
+     * write has propagated. Use this whenever a UI control needs to
+     * publish "intent" rather than "raw state".
+     */
+    public static <T> void bindObject(Property<T> property, ModelValue<T> model, Consumer<T> writer) {
+        final boolean[] updating = {false};
+        property.addListener((obs, oldV, newV) -> {
+            if (updating[0] || newV == null) return;
+            updating[0] = true;
+            try {
+                writer.accept(newV);
             } finally {
                 updating[0] = false;
             }

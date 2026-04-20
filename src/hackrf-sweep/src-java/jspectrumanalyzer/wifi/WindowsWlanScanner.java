@@ -1,5 +1,7 @@
 package jspectrumanalyzer.wifi;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -11,6 +13,7 @@ import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.ptr.PointerByReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import jspectrumanalyzer.wifi.win32.WifiIeParser;
 import jspectrumanalyzer.wifi.win32.Wlanapi;
 
 /**
@@ -45,6 +48,12 @@ public final class WindowsWlanScanner implements WifiScanner {
     private static final int INTERFACE_INFO_SIZE = 16 + 256 * 2 + 4;
     /** Offset of the GUID inside {@code WLAN_INTERFACE_INFO}. */
     private static final int INTERFACE_GUID_OFFSET = 0;
+    /**
+     * Offset of {@code strInterfaceDescription} (256 WCHAR, NUL-terminated)
+     * inside {@code WLAN_INTERFACE_INFO}. Sits immediately after the GUID.
+     */
+    private static final int INTERFACE_DESC_OFFSET = 16;
+    private static final int INTERFACE_DESC_BYTES = 256 * 2;
 
     /** Fixed size of one {@code WLAN_BSS_ENTRY} (variable IE data lives outside). */
     private static final int BSS_ENTRY_FIXED_SIZE = 360;
@@ -56,10 +65,27 @@ public final class WindowsWlanScanner implements WifiScanner {
     private static final int OFF_RSSI = 56;
     private static final int OFF_CENTER_FREQ_KHZ = 92;
     private static final int OFF_PHY_TYPE = 52;
+    /**
+     * Offsets of {@code ulIeOffset} / {@code ulIeSize} inside
+     * {@code WLAN_BSS_ENTRY}. They live at the very end of the fixed
+     * region: 96 (rate set start) + 4 (uRateSetLength) + 252 (USHORT[126]
+     * supported rates) = 352. The IE blob itself sits {@code ulIeOffset}
+     * bytes from the entry start (NOT from the end of the fixed region),
+     * so we read absolute offsets into the BSS list pointer below.
+     */
+    private static final int OFF_IE_OFFSET = 352;
+    private static final int OFF_IE_SIZE = 356;
 
     private final Object lock = new Object();
     private Pointer handle;
-    private List<byte[]> interfaceGuids = Collections.emptyList();
+    private List<AdapterEntry> adapters = Collections.emptyList();
+    /**
+     * GUID hex of the adapter the user picked in the UI, or
+     * {@link WifiAdapter#ALL} (="") to query every adapter. Mutated by
+     * {@link #setSelectedAdapter(String)} on the FX thread; read on the
+     * polling thread inside {@link #scan()} - protected by {@link #lock}.
+     */
+    private String selectedGuidHex = WifiAdapter.ALL;
     private boolean closed = false;
 
     /**
@@ -78,8 +104,11 @@ public final class WindowsWlanScanner implements WifiScanner {
         }
         this.handle = handleRef.getValue();
         try {
-            this.interfaceGuids = enumerateInterfaceGuids();
-            LOG.info("Native Wi-Fi scanner opened with {} interface(s).", interfaceGuids.size());
+            this.adapters = enumerateAdapters();
+            LOG.info("Native Wi-Fi scanner opened with {} interface(s):", adapters.size());
+            for (AdapterEntry a : adapters) {
+                LOG.info("  - {} ({})", a.description, a.guidHex);
+            }
         } catch (RuntimeException ex) {
             // If enumeration failed we still have a handle to close before
             // bubbling the failure out.
@@ -91,7 +120,25 @@ public final class WindowsWlanScanner implements WifiScanner {
     @Override
     public boolean isAvailable() {
         synchronized (lock) {
-            return !closed && handle != null && !interfaceGuids.isEmpty();
+            return !closed && handle != null && !adapters.isEmpty();
+        }
+    }
+
+    @Override
+    public List<WifiAdapter> listAdapters() {
+        synchronized (lock) {
+            List<WifiAdapter> out = new ArrayList<>(adapters.size());
+            for (AdapterEntry a : adapters) {
+                out.add(new WifiAdapter(a.guidHex, a.description));
+            }
+            return out;
+        }
+    }
+
+    @Override
+    public void setSelectedAdapter(String guidHex) {
+        synchronized (lock) {
+            this.selectedGuidHex = (guidHex == null) ? WifiAdapter.ALL : guidHex;
         }
     }
 
@@ -99,13 +146,14 @@ public final class WindowsWlanScanner implements WifiScanner {
     public List<WifiAccessPoint> scan() {
         synchronized (lock) {
             if (closed || handle == null) return Collections.emptyList();
-            if (interfaceGuids.isEmpty()) return Collections.emptyList();
+            if (adapters.isEmpty()) return Collections.emptyList();
             List<WifiAccessPoint> out = new ArrayList<>();
-            for (byte[] guid : interfaceGuids) {
+            for (AdapterEntry a : adapters) {
+                if (!matchesSelection(a)) continue;
                 try {
-                    out.addAll(scanInterface(guid));
+                    out.addAll(scanInterface(a.guidBytes));
                 } catch (RuntimeException ex) {
-                    LOG.warn("WlanGetNetworkBssList failed for one interface", ex);
+                    LOG.warn("WlanGetNetworkBssList failed for adapter {}", a.description, ex);
                 }
             }
             return out;
@@ -116,16 +164,27 @@ public final class WindowsWlanScanner implements WifiScanner {
     public void requestScan() {
         synchronized (lock) {
             if (closed || handle == null) return;
-            for (byte[] guid : interfaceGuids) {
+            for (AdapterEntry a : adapters) {
+                if (!matchesSelection(a)) continue;
                 Memory guidMem = new Memory(16);
-                guidMem.write(0, guid, 0, 16);
+                guidMem.write(0, a.guidBytes, 0, 16);
                 int rc = Wlanapi.Holder.INSTANCE.WlanScan(handle, guidMem, null, null, null);
                 if (rc != Wlanapi.ERROR_SUCCESS) {
-                    LOG.debug("WlanScan returned rc={} for one interface", rc);
+                    LOG.debug("WlanScan returned rc={} for {}", rc, a.description);
                 }
                 // guidMem is freed by JNA when it goes out of scope.
             }
         }
+    }
+
+    /**
+     * "" / null means "all adapters"; anything else is matched
+     * case-insensitively against the canonical GUID string. Caller holds
+     * {@link #lock}.
+     */
+    private boolean matchesSelection(AdapterEntry a) {
+        if (selectedGuidHex == null || selectedGuidHex.isBlank()) return true;
+        return selectedGuidHex.equalsIgnoreCase(a.guidHex);
     }
 
     @Override
@@ -140,12 +199,12 @@ public final class WindowsWlanScanner implements WifiScanner {
                 }
                 handle = null;
             }
-            interfaceGuids = Collections.emptyList();
+            adapters = Collections.emptyList();
         }
     }
 
     /** Caller holds {@link #lock}. */
-    private List<byte[]> enumerateInterfaceGuids() {
+    private List<AdapterEntry> enumerateAdapters() {
         PointerByReference listRef = new PointerByReference();
         int rc = Wlanapi.Holder.INSTANCE.WlanEnumInterfaces(handle, null, listRef);
         if (rc != Wlanapi.ERROR_SUCCESS) {
@@ -157,15 +216,72 @@ public final class WindowsWlanScanner implements WifiScanner {
             int numItems = listPtr.getInt(0);
             // Skip the 4-byte dwIndex after dwNumberOfItems before the array.
             long base = 8;
-            List<byte[]> guids = new ArrayList<>(numItems);
+            List<AdapterEntry> result = new ArrayList<>(numItems);
             for (int i = 0; i < numItems; i++) {
                 long entryStart = base + (long) i * INTERFACE_INFO_SIZE;
                 byte[] guid = listPtr.getByteArray(entryStart + INTERFACE_GUID_OFFSET, 16);
-                guids.add(guid);
+                String desc = readUtf16String(listPtr,
+                        entryStart + INTERFACE_DESC_OFFSET, INTERFACE_DESC_BYTES);
+                result.add(new AdapterEntry(guid, guidToString(guid), desc));
             }
-            return guids;
+            return result;
         } finally {
             Wlanapi.Holder.INSTANCE.WlanFreeMemory(listPtr);
+        }
+    }
+
+    /**
+     * Read a UTF-16LE NUL-terminated WCHAR string starting at the given
+     * absolute offset. Caps at {@code maxBytes} so a missing terminator
+     * never reads past the struct.
+     */
+    private static String readUtf16String(Pointer ptr, long offset, int maxBytes) {
+        byte[] raw = ptr.getByteArray(offset, maxBytes);
+        // Find NUL terminator (two zero bytes on a WCHAR boundary).
+        int end = raw.length;
+        for (int i = 0; i + 1 < raw.length; i += 2) {
+            if (raw[i] == 0 && raw[i + 1] == 0) { end = i; break; }
+        }
+        return new String(raw, 0, end, StandardCharsets.UTF_16LE);
+    }
+
+    /**
+     * Format a Windows {@code GUID} byte layout as a canonical
+     * lower-case hyphenated UUID. Matches the format printed by
+     * Npcap's {@code WlanHelper -i} so the user can map the picker
+     * entries back to the OS view they already know.
+     *
+     * <p>Layout: Data1 (4 bytes LE DWORD), Data2 (2 LE), Data3 (2 LE),
+     * Data4 (8 BE).
+     */
+    private static String guidToString(byte[] g) {
+        ByteBuffer le = ByteBuffer.wrap(g).order(ByteOrder.LITTLE_ENDIAN);
+        long d1 = Integer.toUnsignedLong(le.getInt());
+        int d2 = Short.toUnsignedInt(le.getShort());
+        int d3 = Short.toUnsignedInt(le.getShort());
+        StringBuilder sb = new StringBuilder(36);
+        sb.append(String.format("%08x-%04x-%04x-", d1, d2, d3));
+        sb.append(String.format("%02x%02x", g[8] & 0xff, g[9] & 0xff));
+        sb.append('-');
+        for (int i = 10; i < 16; i++) sb.append(String.format("%02x", g[i] & 0xff));
+        return sb.toString();
+    }
+
+    /**
+     * Internal pairing of a Wi-Fi adapter's raw GUID bytes (passed back
+     * to the native API) with the precomputed canonical hex form (used
+     * for UI lookups) and OS-supplied description. Immutable; replaced
+     * wholesale every time {@link #enumerateAdapters()} runs.
+     */
+    private static final class AdapterEntry {
+        final byte[] guidBytes;
+        final String guidHex;
+        final String description;
+
+        AdapterEntry(byte[] guidBytes, String guidHex, String description) {
+            this.guidBytes = guidBytes;
+            this.guidHex = guidHex;
+            this.description = description;
         }
     }
 
@@ -216,11 +332,41 @@ public final class WindowsWlanScanner implements WifiScanner {
         int phyTypeId = listPtr.getInt(entryStart + OFF_PHY_TYPE);
         String phyType = phyTypeName(phyTypeId);
 
-        WifiAccessPoint ap = WifiAccessPoint.fromKhz(bssid, ssid, rssiDbm, centerFreqKhz, phyType);
+        int primaryMhz = (int) Math.round(centerFreqKhz / 1000.0);
+        WifiIeParser.OperatingInfo op = readOperatingInfo(listPtr, entryStart, primaryMhz);
+
+        WifiAccessPoint ap = WifiAccessPoint.fromKhz(
+                bssid, ssid, rssiDbm, centerFreqKhz, phyType,
+                op.bandwidthMhz(), op.bondedCenterMhz());
         // Sanity filter: reject reports outside any Wi-Fi band; these are
         // almost always stale entries the driver has not aged out yet.
         if (ap.band() == null) return null;
         return ap;
+    }
+
+    /**
+     * Pull the IE blob out of the BSS entry and ask {@link WifiIeParser}
+     * for the operating channel width and bonded-channel centre frequency.
+     * Defaults to {@code (20 MHz, 0)} on any error (truncated buffer,
+     * missing HT/VHT/HE IE) so the marker overlay stays sane even when
+     * the driver returns garbage; the {@code 0} bonded centre is the
+     * documented signal for "fall back to primary".
+     */
+    private static WifiIeParser.OperatingInfo readOperatingInfo(
+            Pointer listPtr, long entryStart, int primaryMhz) {
+        try {
+            long ieOffset = Integer.toUnsignedLong(listPtr.getInt(entryStart + OFF_IE_OFFSET));
+            long ieSize = Integer.toUnsignedLong(listPtr.getInt(entryStart + OFF_IE_SIZE));
+            // Defensive caps - a malformed driver report could otherwise
+            // ask us to read megabytes from random memory. Real IE blobs
+            // are well under 1 KB.
+            if (ieSize == 0 || ieSize > 4096) return new WifiIeParser.OperatingInfo(20, 0);
+            byte[] ieData = listPtr.getByteArray(entryStart + ieOffset, (int) ieSize);
+            return WifiIeParser.parse(ieData, 0, ieData.length, primaryMhz);
+        } catch (RuntimeException ex) {
+            LOG.debug("IE parse failed; defaulting to 20 MHz", ex);
+            return new WifiIeParser.OperatingInfo(20, 0);
+        }
     }
 
     private static String formatMac(byte[] mac) {

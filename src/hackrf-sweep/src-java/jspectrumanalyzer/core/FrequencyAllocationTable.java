@@ -46,9 +46,19 @@ public class FrequencyAllocationTable {
 	}
 
 	public ArrayList<FrequencyBand> getFrequencyBands(long startHz, long endHz){
-		FrequencyBand startBand	= lookupBand(startHz);
 		ArrayList<FrequencyBand> bands	= new ArrayList<>();
-		SortedSet<FrequencyBand> entries = frequencyBands.tailSet(startBand);
+		if (frequencyBands.isEmpty()) {
+			return bands;
+		}
+		// Use a synthetic key for tailSet so we never pass null (which
+		// would trip TreeMap.compare() with a NullPointerException). When
+		// startHz lies below every band in the table, floor() returns null
+		// and we fall back to iterating the whole set from the synthetic
+		// key (which compares as the smallest possible band).
+		FrequencyBand searchKey = new FrequencyBand(startHz, startHz, "", "");
+		FrequencyBand startBand = frequencyBands.floor(searchKey);
+		FrequencyBand from = (startBand != null) ? startBand : searchKey;
+		SortedSet<FrequencyBand> entries = frequencyBands.tailSet(from);
 		for (FrequencyBand frequencyBand : entries) {
 			if (frequencyBand.getHzStartIncl() > endHz) {
 				break;

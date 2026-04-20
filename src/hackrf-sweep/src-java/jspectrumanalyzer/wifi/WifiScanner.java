@@ -34,6 +34,27 @@ public interface WifiScanner extends AutoCloseable {
      */
     void requestScan();
 
+    /**
+     * Snapshot of every Wi-Fi interface the OS currently exposes.
+     * Returns an empty list (never null) on platforms without a usable
+     * Wi-Fi stack. Cheap: implementations cache the result and
+     * re-enumerate only when the cache is empty (see
+     * {@link WindowsWlanScanner}).
+     */
+    List<WifiAdapter> listAdapters();
+
+    /**
+     * Restrict {@link #scan()} and {@link #requestScan()} to a single
+     * adapter, matched by the {@code guidHex} returned from
+     * {@link #listAdapters()}. Pass {@link WifiAdapter#ALL} (or
+     * {@code null}) to query every adapter (the default behaviour).
+     *
+     * <p>An unknown GUID is silently ignored - the scanner falls back to
+     * "all adapters" so the UI never gets stuck on a stale selection
+     * after a USB adapter is unplugged.
+     */
+    void setSelectedAdapter(String guidHex);
+
     /** Idempotent. Releases the OS handle / closes the session. */
     @Override
     void close();

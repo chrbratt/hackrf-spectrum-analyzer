@@ -98,6 +98,22 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.13")
     runtimeOnly("ch.qos.logback:logback-classic:1.5.6")
 
+    // pcap4j: Phase-2 monitor-mode packet capture. Pure Java + JNA wrapper
+    // around libpcap (Linux) / Npcap (Windows). MIT-licensed, ~600 KB on
+    // disk. Loaded via reflection by Pcap4jMonitorCapture so the absence
+    // of Npcap on the host degrades gracefully to NoOpMonitorCapture
+    // instead of failing class init - that's why these are runtimeOnly
+    // and the Pcap4j-specific code uses string-typed Class.forName lookups
+    // for the parts of the API it touches.
+    //
+    // Runtime requirements (see TODO-WIFI-PHASE-2.md for the full list):
+    //   1. Npcap installed with "Support raw 802.11 traffic" enabled.
+    //   2. Process running as administrator.
+    //   3. Wi-Fi NIC with a driver that supports NDIS native 802.11
+    //      monitor mode (verify with `netsh wlan show wirelesscapabilities`).
+    implementation("org.pcap4j:pcap4j-core:1.8.2")
+    implementation("org.pcap4j:pcap4j-packetfactory-static:1.8.2")
+
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

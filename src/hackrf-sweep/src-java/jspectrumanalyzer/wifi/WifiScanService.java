@@ -1,7 +1,15 @@
 package jspectrumanalyzer.wifi;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -40,10 +48,22 @@ public final class WifiScanService {
     private static final long POLL_INTERVAL_MS = 1000;
     private static final long ACTIVE_SCAN_INTERVAL_MS = 5000;
 
+    /** Default rolling-history window per AP, in milliseconds. */
+    public static final long HISTORY_WINDOW_MS = 60_000L;
+
     private final WifiScanner scanner;
     private final AtomicReference<List<WifiAccessPoint>> latest =
             new AtomicReference<>(Collections.emptyList());
     private final List<Consumer<List<WifiAccessPoint>>> listeners = new CopyOnWriteArrayList<>();
+
+    /**
+     * Per-BSSID rolling RSSI history. Each deque holds {@link RssiSample}s
+     * appended in time order; samples older than {@link #HISTORY_WINDOW_MS}
+     * are pruned at the start of each poll. Concurrent map so the FX-thread
+     * reader and the polling-thread writer never deadlock; deque accesses
+     * are synchronized on the deque itself for the same reason.
+     */
+    private final Map<String, Deque<RssiSample>> history = new ConcurrentHashMap<>();
 
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> pollHandle;
@@ -56,6 +76,20 @@ public final class WifiScanService {
     /** {@code true} if the wrapped scanner reports a usable Wi-Fi stack. */
     public boolean isAvailable() {
         return scanner.isAvailable();
+    }
+
+    /** Pass-through to {@link WifiScanner#listAdapters()}. */
+    public List<WifiAdapter> listAdapters() {
+        return scanner.listAdapters();
+    }
+
+    /**
+     * Pass-through to {@link WifiScanner#setSelectedAdapter(String)}.
+     * Safe to call from any thread; the change takes effect on the next
+     * poll tick.
+     */
+    public void setSelectedAdapter(String guidHex) {
+        scanner.setSelectedAdapter(guidHex);
     }
 
     /** Most recent snapshot; never null, may be empty. Cheap atomic read. */
@@ -126,6 +160,7 @@ public final class WifiScanService {
             // sure listeners always get a non-null list.
             if (fresh == null) fresh = Collections.emptyList();
             latest.set(fresh);
+            updateHistory(fresh, System.currentTimeMillis());
             for (Consumer<List<WifiAccessPoint>> l : listeners) {
                 try {
                     l.accept(fresh);
@@ -137,6 +172,62 @@ public final class WifiScanService {
             LOG.warn("Wi-Fi poll failed", ex);
         }
     }
+
+    /**
+     * Append the latest RSSI of every visible AP to its rolling history and
+     * evict samples older than {@link #HISTORY_WINDOW_MS}. Also drops the
+     * deque for any BSSID that has been gone for the entire window so the
+     * map cannot grow without bound when APs disappear (mobile hotspots).
+     */
+    private void updateHistory(List<WifiAccessPoint> snapshot, long now) {
+        Set<String> seenThisTick = new HashSet<>(snapshot.size() * 2);
+        for (WifiAccessPoint ap : snapshot) {
+            String key = ap.bssid();
+            seenThisTick.add(key);
+            Deque<RssiSample> dq = history.computeIfAbsent(key, k -> new ArrayDeque<>());
+            synchronized (dq) {
+                dq.addLast(new RssiSample(now, ap.rssiDbm()));
+                pruneOlderThan(dq, now - HISTORY_WINDOW_MS);
+            }
+        }
+        // Sweep map: drop entries whose newest sample is older than the
+        // window so disappeared APs don't linger forever in the trend store.
+        long cutoff = now - HISTORY_WINDOW_MS;
+        Iterator<Map.Entry<String, Deque<RssiSample>>> it = history.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Deque<RssiSample>> e = it.next();
+            if (seenThisTick.contains(e.getKey())) continue;
+            Deque<RssiSample> dq = e.getValue();
+            synchronized (dq) {
+                pruneOlderThan(dq, cutoff);
+                if (dq.isEmpty()) it.remove();
+            }
+        }
+    }
+
+    private static void pruneOlderThan(Deque<RssiSample> dq, long minTimestampMs) {
+        while (!dq.isEmpty() && dq.peekFirst().timestampMs < minTimestampMs) {
+            dq.pollFirst();
+        }
+    }
+
+    /**
+     * Snapshot the rolling RSSI history for one BSSID. The returned list is a
+     * defensive copy and ordered oldest-first; callers can render it directly
+     * without worrying about concurrent modification from the polling thread.
+     * Returns an empty list if the BSSID is unknown.
+     */
+    public List<RssiSample> getHistory(String bssid) {
+        if (bssid == null) return Collections.emptyList();
+        Deque<RssiSample> dq = history.get(bssid);
+        if (dq == null) return Collections.emptyList();
+        synchronized (dq) {
+            return new ArrayList<>(dq);
+        }
+    }
+
+    /** Single timestamped RSSI reading. {@code timestampMs} is wall-clock {@link System#currentTimeMillis()}. */
+    public record RssiSample(long timestampMs, int rssiDbm) {}
 
     private void triggerActiveScan() {
         try {

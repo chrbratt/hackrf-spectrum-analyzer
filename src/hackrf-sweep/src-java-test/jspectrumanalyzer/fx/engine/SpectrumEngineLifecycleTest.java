@@ -56,7 +56,7 @@ class SpectrumEngineLifecycleTest {
                     try {
                         start.await();
                         for (int j = 0; j < 100; j++) {
-                            engine.requestReconcile();
+                            engine.requestReconcile("test");
                         }
                     } catch (InterruptedException ignored) {
                         Thread.currentThread().interrupt();

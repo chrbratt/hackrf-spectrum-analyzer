@@ -28,18 +28,30 @@ public final class ChartToolbar extends HBox {
     private final SettingsStore settings;
     private final SpectrumEngine engine;
     private final Runnable clearWaterfallAndPersistent;
+    private final Runnable openWifiWindow;
 
     private final Button freezeBtn = new Button("Freeze display");
     private final Button clearBtn = new Button("Clear traces");
     private final CheckBox waterfallToggle = new CheckBox("Waterfall");
     private final CheckBox persistentToggle = new CheckBox("Persistent");
+    private final Button wifiBtn = new Button("Wi-Fi\u2026");
 
+    /**
+     * @param openWifiWindow invoked when the user presses the "Wi-Fi..."
+     *                       button. Owns the lazy creation + show/focus of
+     *                       the Wi-Fi window so this toolbar stays unaware
+     *                       of the wifi package. May be {@code null} to
+     *                       hide the button entirely (useful when AP
+     *                       discovery is not supported on the host).
+     */
     public ChartToolbar(SettingsStore settings,
                         SpectrumEngine engine,
-                        Runnable clearWaterfallAndPersistent) {
+                        Runnable clearWaterfallAndPersistent,
+                        Runnable openWifiWindow) {
         this.settings = settings;
         this.engine = engine;
         this.clearWaterfallAndPersistent = clearWaterfallAndPersistent;
+        this.openWifiWindow = openWifiWindow;
 
         setSpacing(8);
         setAlignment(Pos.CENTER_LEFT);
@@ -50,12 +62,17 @@ public final class ChartToolbar extends HBox {
         wireClear();
         wireWaterfallToggle();
         wirePersistentToggle();
+        wireWifiButton();
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
+        // Wi-Fi button sits on the right side of the toolbar so it visually
+        // anchors as the "open another window" affordance, separate from
+        // the chart-state toggles (freeze / clear / waterfall / persistent).
         getChildren().addAll(freezeBtn, clearBtn, separator(),
-                waterfallToggle, persistentToggle, spacer);
+                waterfallToggle, persistentToggle, spacer,
+                separator(), wifiBtn);
     }
 
     /** Programmatic access to keyboard shortcuts. */
@@ -104,6 +121,21 @@ public final class ChartToolbar extends HBox {
             boolean v = settings.isWaterfallVisible().getValue();
             if (waterfallToggle.isSelected() != v) waterfallToggle.setSelected(v);
         }));
+    }
+
+    private void wireWifiButton() {
+        wifiBtn.setTooltip(tip(
+                "Open the Wi-Fi window: lists every visible access point with "
+                + "SSID, BSSID, RSSI and channel, and lets you retune the "
+                + "spectrum to a single Wi-Fi band. Both windows stay "
+                + "interactive so you can keep changing scan / display "
+                + "settings while looking at the AP list."));
+        if (openWifiWindow == null) {
+            wifiBtn.setVisible(false);
+            wifiBtn.setManaged(false);
+            return;
+        }
+        wifiBtn.setOnAction(e -> openWifiWindow.run());
     }
 
     private void wirePersistentToggle() {

@@ -381,3 +381,91 @@
     -fx-font-size: 11px;
     -fx-font-style: italic;
 }
+
+/* TableView (Wi-Fi window AP list, future occupancy tables): JavaFX's default
+ * TableView ignores -fx-base for the body and renders white-on-white inside a
+ * dark theme. Spell out every part explicitly so rows, headers, selection,
+ * and the empty-placeholder area all stay on the dark palette. */
+.table-view {
+    -fx-background-color: #1b1b1f;
+    -fx-control-inner-background: #1b1b1f;
+    -fx-control-inner-background-alt: #1f1f24;
+    -fx-table-cell-border-color: #2a2a30;
+    -fx-padding: 0;
+}
+
+.table-view .column-header-background {
+    -fx-background-color: #232327;
+    -fx-padding: 0;
+}
+
+.table-view .column-header,
+.table-view .filler {
+    -fx-background-color: #232327;
+    -fx-border-color: transparent #2a2a30 #2a2a30 transparent;
+    -fx-border-width: 0 1 1 0;
+    -fx-padding: 4 6 4 6;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #f0f0f0;
+    -fx-font-weight: bold;
+    -fx-alignment: CENTER_LEFT;
+}
+
+.table-view .table-row-cell {
+    -fx-background-color: -fx-control-inner-background;
+    -fx-table-cell-border-color: transparent;
+    -fx-text-fill: #f0f0f0;
+}
+
+.table-view .table-row-cell:odd {
+    -fx-background-color: -fx-control-inner-background-alt;
+}
+
+.table-view .table-row-cell:selected {
+    -fx-background-color: #2f4d3a;
+    -fx-text-fill: #ffffff;
+}
+
+.table-view .table-row-cell:selected:focused {
+    -fx-background-color: #356e45;
+}
+
+.table-view .table-cell {
+    -fx-text-fill: #f0f0f0;
+    -fx-padding: 4 6 4 6;
+    -fx-border-color: transparent;
+}
+
+.table-view .placeholder .label {
+    -fx-text-fill: #888;
+    -fx-font-style: italic;
+}
+
+/* The little disclosure / sort arrow rendered in column headers - keep it on
+ * the same accent colour as focus rings so it reads as "active sort". */
+.table-view .arrow {
+    -fx-background-color: -fx-accent;
+}
+
+/* Ensure the empty virtual-flow area (below the last row when rows do not
+ * fill the viewport) stays dark instead of falling back to modena's white. */
+.table-view .virtual-flow,
+.table-view .virtual-flow .clipped-container,
+.table-view .virtual-flow .sheet,
+.table-view .virtual-flow > .corner {
+    -fx-background-color: #1b1b1f;
+}
+
+.table-view .virtual-flow > .corner {
+    -fx-border-color: transparent;
+}
+
+/* Empty cells (rows beyond data) - modena draws them with -fx-background;
+ * pin them to the dark inner background so the table doesn't end in a
+ * white strip when the view is taller than the data. */
+.table-view .table-row-cell:empty {
+    -fx-background-color: #1b1b1f;
+    -fx-border-color: transparent;
+}

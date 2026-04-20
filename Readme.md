@@ -1,5 +1,7 @@
+
+
 # HackRF Spectrum Analyzer for Windows
-based on Pavsa's HackRF hackrf_sweep Spectrum Analyzer
+A customized, AI-aided rewrite of the original hackrf_sweep logic. Built exclusively for Windows using the latest HackRF 2026.01.3 stack to improve performance and add a unique feature set for personal use.
 
 ## Run from source
 

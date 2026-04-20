@@ -69,7 +69,17 @@ public final class DisplayTab extends ScrollPane {
                                         FxControls.slider(settings.getWaterfallSpeed(), 1, 10),
                                         "How many sweeps per pushed waterfall row. "
                                         + "10 = every sweep (fast scroll, less averaging), "
-                                        + "1 = every 10th sweep (slow scroll, more averaging)."))),
+                                        + "1 = every 10th sweep (slow scroll, more averaging).")),
+                        FxControls.withTooltip(
+                                FxControls.checkBox("Funnel mode (compressed long-term history)",
+                                        settings.isWaterfallFunnel()),
+                                "Split the waterfall into 4 stacked tiers with strides "
+                                + "1, 2, 4 and 8. The top tier shows live detail at one "
+                                + "row per sweep; each tier below combines twice as many "
+                                + "sweeps per row using max-hold (so short bursts still "
+                                + "survive). Visible time stretches to ~3.75x the flat "
+                                + "waterfall without any extra per-frame cost. Switching "
+                                + "modes clears the existing scrollback.")),
                 FxControls.section("Palette",
                         new Label("Mapped power range (dBm)"),
                         buildPaletteRangeSlider(),
@@ -86,7 +96,22 @@ public final class DisplayTab extends ScrollPane {
                                 "Paint the colored allocation bands (e.g. Wi-Fi, GSM, FM radio) over the "
                                 + "spectrum so it's obvious which service each peak belongs to. The bands "
                                 + "come from the country file selected below."),
-                        FxControls.labeled("Country / table", buildAllocationCombo())));
+                        FxControls.labeled("Country / table", buildAllocationCombo())),
+                FxControls.section("Wi-Fi AP markers",
+                        FxControls.withTooltip(
+                                FxControls.checkBox("Show AP markers on chart",
+                                        settings.isApMarkersVisible()),
+                                "Draw a translucent box for every visible Wi-Fi access point at its centre "
+                                + "frequency. Auto-enables when the Wi-Fi window opens; tick this to keep "
+                                + "them visible after the window is closed."),
+                        FxControls.labeled("Marker intensity (%)",
+                                FxControls.withTooltip(
+                                        FxControls.slider(settings.getApMarkerOpacity(), 5, 100),
+                                        "Peak fill opacity of each marker box (5-100%). The box uses a "
+                                        + "vertical gradient that fades from this value at the RSSI line "
+                                        + "down to fully transparent at the chart baseline, so weaker APs "
+                                        + "look fainter than strong ones. Lower the value for a subtler "
+                                        + "overlay, raise it to make markers pop."))));
         setContent(content);
     }
 

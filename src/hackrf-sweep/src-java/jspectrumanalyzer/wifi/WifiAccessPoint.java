@@ -20,6 +20,19 @@ import java.util.Objects;
  *       align AP markers with the spectrum chart.</li>
  *   <li>{@code phyType} - friendly name of the radio (e.g. "802.11ac") for the
  *       UI; {@code null} when unknown.</li>
+ *   <li>{@code bandwidthMhz} - operating channel bandwidth in MHz (20, 40,
+ *       80, 160 or 80+80 reported as 160). Derived from the parsed HT/VHT/HE
+ *       Operation IE on Windows; falls back to 20 MHz when no IE is
+ *       available (older PHYs or platform stubs).</li>
+ *   <li>{@code bondedCenterMhz} - RF centre of the full bonded-channel
+ *       block in MHz. For 20 MHz APs this equals {@code centerFrequencyMhz}.
+ *       For HT 40 / VHT 80 / 160 / HE 6 GHz the bonded block is offset
+ *       from the primary by the secondary-channel offset (HT) or by the
+ *       Channel Center Frequency Segment 0 field (VHT/HE). The compact
+ *       constructor falls back to {@code centerFrequencyMhz} whenever a
+ *       caller passes 0 / a non-positive value, so old call sites and
+ *       platform stubs that do not know the bonded centre still compose
+ *       a valid record.</li>
  * </ul>
  *
  * <p>The record is a value type - {@code equals}/{@code hashCode} are derived
@@ -31,7 +44,9 @@ public record WifiAccessPoint(
         String ssid,
         int rssiDbm,
         int centerFrequencyMhz,
-        String phyType) {
+        String phyType,
+        int bandwidthMhz,
+        int bondedCenterMhz) {
 
     /** Lower edge of the 2.4 GHz band in MHz. */
     public static final int BAND_24_LOW_MHZ = 2400;
@@ -47,18 +62,49 @@ public record WifiAccessPoint(
         Objects.requireNonNull(bssid, "bssid");
         Objects.requireNonNull(ssid, "ssid");
         // phyType may be null (the Windows stack reports unknown PHYs as 0).
+        if (bandwidthMhz <= 0) bandwidthMhz = 20;
+        // bondedCenterMhz <= 0 means "caller does not know"; fall back to
+        // the primary so downstream code can use bondedCenterMhz()
+        // unconditionally without null checks.
+        if (bondedCenterMhz <= 0) bondedCenterMhz = centerFrequencyMhz;
     }
 
     /**
      * Convenience constructor from a frequency reported in kHz (the Windows
-     * BSS list unit) to keep the conversion in exactly one place.
+     * BSS list unit) to keep the conversion in exactly one place. Defaults
+     * the operating bandwidth to 20 MHz and the bonded centre to the
+     * primary - callers with parsed HT/VHT/HE info should use the wider
+     * overload to override both.
      */
     public static WifiAccessPoint fromKhz(String bssid, String ssid, int rssiDbm,
                                           long centerFrequencyKhz, String phyType) {
+        return fromKhz(bssid, ssid, rssiDbm, centerFrequencyKhz, phyType, 20, 0);
+    }
+
+    /**
+     * Convenience constructor from a frequency reported in kHz (the Windows
+     * BSS list unit) plus a parsed operating bandwidth in MHz. Defaults
+     * the bonded centre to the primary (caller did not supply one).
+     */
+    public static WifiAccessPoint fromKhz(String bssid, String ssid, int rssiDbm,
+                                          long centerFrequencyKhz, String phyType,
+                                          int bandwidthMhz) {
+        return fromKhz(bssid, ssid, rssiDbm, centerFrequencyKhz, phyType,
+                bandwidthMhz, 0);
+    }
+
+    /**
+     * Convenience constructor that also carries the parsed bonded-channel
+     * centre frequency in MHz. Pass 0 to fall back to the primary centre.
+     */
+    public static WifiAccessPoint fromKhz(String bssid, String ssid, int rssiDbm,
+                                          long centerFrequencyKhz, String phyType,
+                                          int bandwidthMhz, int bondedCenterMhz) {
         // Round to nearest MHz: kHz / 1000 with rounding handles e.g.
         // 2412345 kHz (2412.345 MHz) -> 2412 MHz, the canonical ch 1 centre.
         int mhz = (int) Math.round(centerFrequencyKhz / 1000.0);
-        return new WifiAccessPoint(bssid, ssid, rssiDbm, mhz, phyType);
+        return new WifiAccessPoint(bssid, ssid, rssiDbm, mhz, phyType,
+                bandwidthMhz, bondedCenterMhz);
     }
 
     /** Three-way band classification. {@code null} for out-of-band reports. */

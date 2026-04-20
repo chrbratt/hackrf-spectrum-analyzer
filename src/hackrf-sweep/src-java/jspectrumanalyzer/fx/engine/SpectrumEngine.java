@@ -22,6 +22,7 @@ import jspectrumanalyzer.core.FFTBins;
 import jspectrumanalyzer.core.HackRFSettings.HackRFEventListener;
 import jspectrumanalyzer.core.SpurFilter;
 import jspectrumanalyzer.fx.model.SettingsStore;
+import jspectrumanalyzer.nativebridge.DeviceBusyException;
 import jspectrumanalyzer.nativebridge.HackRFSweepDataCallback;
 import jspectrumanalyzer.nativebridge.HackRFSweepNativeBridge;
 
@@ -64,23 +65,56 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
 
     private final SettingsStore settings;
 
-    private final ArrayBlockingQueue<FFTBins> hwProcessingQueue = new ArrayBlockingQueue<>(1000);
+    private static final int PROCESSING_QUEUE_CAPACITY = 1000;
+    private final ArrayBlockingQueue<FFTBins> hwProcessingQueue =
+            new ArrayBlockingQueue<>(PROCESSING_QUEUE_CAPACITY);
     private final ArrayBlockingQueue<Integer> launchCommands = new ArrayBlockingQueue<>(1);
     private final ReentrantLock lock = new ReentrantLock();
+
+    /**
+     * Cumulative counters for the {@code HealthMonitor}. Incremented on
+     * the SDR callback / processing thread and read on the monitor
+     * thread, so {@link java.util.concurrent.atomic.AtomicLong} keeps
+     * us free of torn long reads on 32-bit JVMs without taking a lock
+     * on the hot path.
+     */
+    private final java.util.concurrent.atomic.AtomicLong droppedSamples =
+            new java.util.concurrent.atomic.AtomicLong(0);
+    private final java.util.concurrent.atomic.AtomicLong framesProduced =
+            new java.util.concurrent.atomic.AtomicLong(0);
+    /**
+     * Raw native callback invocations. Lets the {@code HealthMonitor}
+     * tell apart "native side stopped delivering samples" (chunks=0)
+     * from "consumer thread is hung / paused" (chunks &gt; 0 but
+     * frames=0) without forcing the user to attach a profiler.
+     */
+    private final java.util.concurrent.atomic.AtomicLong chunksReceived =
+            new java.util.concurrent.atomic.AtomicLong(0);
 
     private final List<Consumer<SpectrumFrame>> frameConsumers = new CopyOnWriteArrayList<>();
 
     /**
-     * Three single-thread executors, one per concurrent role. They are
-     * created up-front and shut down once on engine shutdown; sweep and
-     * processing tasks are submitted/cancelled per restart cycle. Keeping
-     * one executor per role (rather than a shared cached pool) means
-     * thread names in jstack / profilers tell us exactly which subsystem
-     * is busy, and a misbehaving worker can't starve the others.
+     * Three single-thread executors, one per concurrent role. The launcher
+     * is created once and lives for the whole engine. The sweep and
+     * processing executors are <em>replaced</em> by {@link #stopSweep} when
+     * a worker fails to exit in time (see field comments below), so that a
+     * wedged worker on the old executor can never block a fresh task.
+     *
+     * <p>Each role keeps its own executor (rather than a shared cached
+     * pool) so thread names in jstack / profilers tell us exactly which
+     * subsystem is busy, and a misbehaving worker can't starve the others.
      */
     private final ExecutorService launcherExec   = namedSingleThread("SpectrumEngine-launcher");
-    private final ExecutorService sweepExec      = namedSingleThread("hackrf_sweep");
-    private final ExecutorService processingExec = namedSingleThread("SpectrumEngine-processing");
+    /**
+     * Volatile so the launcher thread reads the latest reference. When a
+     * native sweep call refuses to exit on stop, {@link #stopSweep} swaps
+     * this for a fresh executor and orphans the old one - the orphan keeps
+     * the wedged native call alive on a daemon thread (so it can't block
+     * JVM shutdown) but never accepts another submit.
+     */
+    private volatile ExecutorService sweepExec      = namedSingleThread("hackrf_sweep");
+    /** Same swap-on-abandon strategy as {@link #sweepExec}; see comment there. */
+    private volatile ExecutorService processingExec = namedSingleThread("SpectrumEngine-processing");
 
     private volatile Future<?> launcherFuture;
     private volatile Future<?> sweepFuture;
@@ -88,6 +122,39 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     private volatile boolean forceStopSweep = false;
     private volatile boolean shuttingDown = false;
     private volatile boolean hwSendingData = false;
+
+    /**
+     * Per-sweep wrapper around {@link #newSpectrumData}. The native side
+     * keeps its own JNI reference to whatever object we hand to
+     * {@code HackRFSweepNativeBridge.start}, so when {@link #stopSweep}
+     * orphans a wedged sweep we cannot revoke that reference - but we
+     * <em>can</em> deactivate the wrapper. After {@link #deactivate} the
+     * orphan callback becomes a no-op and no longer pushes stale-layout
+     * frames (different freqStart / fftBinWidthHz than the freshly
+     * started sweep) into {@link #hwProcessingQueue}, which used to make
+     * the new processing thread choke on inconsistent bin geometry and
+     * trip the HealthMonitor's "consumer hung" detector.
+     */
+    private static final class SweepCallback implements HackRFSweepDataCallback {
+        private final SpectrumEngine engine;
+        private volatile boolean active = true;
+
+        SweepCallback(SpectrumEngine engine) { this.engine = engine; }
+
+        void deactivate() { this.active = false; }
+
+        @Override
+        public void newSpectrumData(boolean sweepStarted, double[] frequencyStart,
+                                    float fftBinWidthHz, float[] signalPowerdBm) {
+            if (!active) return;
+            engine.newSpectrumData(sweepStarted, frequencyStart, fftBinWidthHz, signalPowerdBm);
+        }
+    }
+
+    /** Replaced on every {@link #restartSweepExecute}; deactivated by
+     *  {@link #stopSweep} so an orphaned native sweep can't keep mutating
+     *  state owned by the next sweep's processing thread. */
+    private volatile SweepCallback currentSweepCallback;
 
     private volatile DatasetSpectrumPeak datasetSpectrum;
     private volatile SpurFilter spurFilter;
@@ -164,9 +231,15 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     @Override
     public void newSpectrumData(boolean sweepStarted, double[] frequencyStart,
                                 float fftBinWidthHz, float[] signalPowerdBm) {
+        chunksReceived.incrementAndGet();
         fireHardwareStateChanged(true);
         if (!hwProcessingQueue.offer(new FFTBins(sweepStarted, frequencyStart, fftBinWidthHz, signalPowerdBm))) {
-            LOG.warn("Processing queue full, dropping sample (UI thread is too slow)");
+            droppedSamples.incrementAndGet();
+            // Suppressed at WARN: the per-tick HealthMonitor reports
+            // drop counts and queue depth in a single line, so logging
+            // every drop just buries the useful summary. Keep the trace
+            // available for deep debugging.
+            LOG.trace("Processing queue full, dropping sample");
         }
     }
 
@@ -174,23 +247,25 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         // Per the agreed UX: while STOPPED, settings changes do nothing
         // (the user can adjust freely without grabbing the radio); while
         // RUNNING, they restart the sweep just like the legacy behaviour.
-        Runnable restartIfRunning = this::restartSweepIfRunning;
-        settings.getFrequency().addListener(restartIfRunning);
+        // Each listener tags its reason so the launcher's restart-cause log
+        // tells us *exactly* which setting forced a re-tune (invaluable for
+        // diagnosing periodic restart loops).
+        settings.getFrequency()           .addListener(() -> restartSweepIfRunning("frequency"));
         // A change in the multi-range plan (preset switch, single->multi or
         // back) needs the same treatment as a single-range change: restart
         // the sweep so the new segment list is pushed to libhackrf.
-        settings.getFrequencyPlan().addListener(restartIfRunning);
-        settings.getFFTBinHz().addListener(restartIfRunning);
-        settings.getSamples().addListener(restartIfRunning);
-        settings.getGainLNA().addListener(restartIfRunning);
-        settings.getGainVGA().addListener(restartIfRunning);
-        settings.getAntennaPowerEnable().addListener(restartIfRunning);
-        settings.getAntennaLNA().addListener(restartIfRunning);
-        settings.getAvgIterations().addListener(restartIfRunning);
+        settings.getFrequencyPlan()       .addListener(() -> restartSweepIfRunning("frequencyPlan"));
+        settings.getFFTBinHz()            .addListener(() -> restartSweepIfRunning("fftBinHz"));
+        settings.getSamples()             .addListener(() -> restartSweepIfRunning("samples"));
+        settings.getGainLNA()             .addListener(() -> restartSweepIfRunning("gainLNA"));
+        settings.getGainVGA()             .addListener(() -> restartSweepIfRunning("gainVGA"));
+        settings.getAntennaPowerEnable()  .addListener(() -> restartSweepIfRunning("antennaPower"));
+        settings.getAntennaLNA()          .addListener(() -> restartSweepIfRunning("antennaLNA"));
+        settings.getAvgIterations()       .addListener(() -> restartSweepIfRunning("avgIterations"));
 
         // Picking a different physical device requires fully re-opening
         // libhackrf, which is exactly what restartSweep() does anyway.
-        settings.getSelectedSerial().addListener(restartIfRunning);
+        settings.getSelectedSerial()      .addListener(() -> restartSweepIfRunning("selectedSerial"));
     }
 
     /**
@@ -202,21 +277,51 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
      * native side to shut down).
      */
     private void wireRunStateObserver() {
-        settings.isRunningRequested().addListener(this::requestReconcile);
+        settings.isRunningRequested().addListener(() -> requestReconcile("runningRequested"));
     }
 
-    private void restartSweepIfRunning() {
+    private void restartSweepIfRunning(String reason) {
         if (settings.isRunningRequested().getValue()) {
-            requestReconcile();
+            requestReconcile(reason);
         }
     }
 
+    /**
+     * Minimum spacing between two consecutive launcher reconciles. The
+     * radio takes ~1 s to stop+start, so any caller that fires reconciles
+     * faster than this is just thrashing libhackrf. We coalesce burst
+     * requests inside this window into a single restart, which protects
+     * against a buggy listener (or a user fiddling controls quickly) from
+     * starving the sweep loop.
+     */
+    private static final long MIN_RESTART_INTERVAL_MS = 500;
+
+    /** Captures the most recent request {@code reason} so the launcher can
+     *  log <em>why</em> it is reconciling. Volatile because writers run on
+     *  whatever thread fired the model listener and the launcher thread
+     *  reads it. */
+    private volatile String lastReconcileReason = "init";
+
     private void startLauncherThread() {
         launcherFuture = launcherExec.submit(() -> {
+            long lastRunNanos = 0L;
             while (!shuttingDown && !Thread.currentThread().isInterrupted()) {
                 try {
                     launchCommands.take();
+                    long sinceLastMs = (System.nanoTime() - lastRunNanos) / 1_000_000L;
+                    if (lastRunNanos != 0L && sinceLastMs < MIN_RESTART_INTERVAL_MS) {
+                        long waitMs = MIN_RESTART_INTERVAL_MS - sinceLastMs;
+                        // Sleep then drain so any reconcile that arrives
+                        // mid-sleep is folded into this single restart.
+                        Thread.sleep(waitMs);
+                        launchCommands.poll();
+                        LOG.debug("Coalesced reconcile (waited {} ms after previous restart)", waitMs);
+                    }
+                    String reason = lastReconcileReason;
+                    LOG.info("Launcher reconcile triggered (reason={}, running={})",
+                            reason, settings.isRunningRequested().getValue());
                     reconcileToRunningRequested();
+                    lastRunNanos = System.nanoTime();
                 } catch (InterruptedException e) {
                     return;
                 } catch (Exception e) {
@@ -232,8 +337,15 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
      * the sweep accordingly. Repeated calls are coalesced - only the latest
      * request is honoured, so spamming Stop or rapid setting changes can
      * never queue up multiple worker restarts.
+     *
+     * @param reason free-form tag identifying the call site; logged by the
+     *               launcher when it actually restarts the radio. Use a
+     *               short stable identifier (e.g. {@code "frequency"},
+     *               {@code "wifiBandSwitch"}) so log greps can attribute
+     *               restart bursts to a specific subsystem.
      */
-    public synchronized void requestReconcile() {
+    public synchronized void requestReconcile(String reason) {
+        lastReconcileReason = reason;
         if (!launchCommands.offer(0)) {
             launchCommands.clear();
             launchCommands.offer(0);
@@ -242,7 +354,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
 
     /** Backwards-compatible alias used by callers that meant "restart". */
     public synchronized void restartSweep() {
-        requestReconcile();
+        requestReconcile("restartSweep()");
     }
 
     /**
@@ -261,10 +373,16 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
 
     private void restartSweepExecute() {
         stopSweep();
+        // Mint a fresh per-sweep callback wrapper. The previous wrapper
+        // (if any) was already deactivated inside stopSweep, so even if
+        // its native sweep is still alive on the orphan thread it can
+        // no longer touch our queue.
+        final SweepCallback cb = new SweepCallback(this);
+        currentSweepCallback = cb;
         sweepFuture = sweepExec.submit(() -> {
             try {
                 forceStopSweep = false;
-                sweepLoop();
+                sweepLoop(cb);
             } catch (IOException e) {
                 LOG.error("Sweep loop crashed", e);
             }
@@ -275,6 +393,14 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     private static final long NATIVE_STOP_JOIN_MS = 2_000;
     /** How many times we re-issue {@code hackrf_sweep_lib_stop()} before giving up. */
     private static final int  NATIVE_STOP_RETRIES = 5;
+    /**
+     * Cap on how long we wait for the processing thread to drain its
+     * current frame after we cancel it. Bigger than the native stop join
+     * because a slow {@code consumer.accept} (e.g. a 26 MB defensive copy
+     * in {@code DensityHistogramService.publishSnapshot}) can legitimately
+     * tie up the thread for a few seconds during a settings flip.
+     */
+    private static final long PROCESSING_STOP_JOIN_MS = 5_000;
 
     private void stopSweep() {
         forceStopSweep = true;
@@ -292,20 +418,54 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                 if (waitFor(sf, NATIVE_STOP_JOIN_MS)) break;
             }
             if (!sf.isDone()) {
-                LOG.warn("hackrf_sweep worker did not exit after {} ms; cancelling",
+                LOG.warn("hackrf_sweep worker did not exit after {} ms; "
+                        + "swapping in a fresh executor so the next sweep can start.",
                         NATIVE_STOP_RETRIES * NATIVE_STOP_JOIN_MS);
                 sf.cancel(true);
+                // Orphan the old executor: shutdownNow() prevents new
+                // submits and re-interrupts the worker, but the wedged
+                // native call keeps running on its daemon thread until
+                // libhackrf finally returns. The replacement executor
+                // immediately accepts the next sweep submission rather
+                // than queueing it behind the corpse.
+                ExecutorService old = sweepExec;
+                sweepExec = namedSingleThread("hackrf_sweep");
+                old.shutdownNow();
             }
             sweepFuture = null;
         }
         Future<?> pf = processingFuture;
         if (pf != null) {
             pf.cancel(true); // delivers interrupt; runProcessing checks isInterrupted
-            if (!waitFor(pf, NATIVE_STOP_JOIN_MS)) {
-                LOG.warn("Processing thread did not exit within {} ms; abandoning",
-                        NATIVE_STOP_JOIN_MS);
+            if (!waitFor(pf, PROCESSING_STOP_JOIN_MS)) {
+                LOG.warn("Processing thread did not exit within {} ms; "
+                        + "swapping in a fresh executor (orphan keeps running "
+                        + "until its consumer.accept returns).",
+                        PROCESSING_STOP_JOIN_MS);
+                ExecutorService old = processingExec;
+                processingExec = namedSingleThread("SpectrumEngine-processing");
+                old.shutdownNow();
             }
             processingFuture = null;
+        }
+        // Detach the per-sweep callback BEFORE draining the queue. The
+        // native sweep can keep firing until libhackrf finally returns
+        // (especially on the orphan path after a swap-on-abandon). With
+        // the wrapper deactivated those calls become no-ops, so nothing
+        // races against the upcoming clear().
+        SweepCallback cb = currentSweepCallback;
+        if (cb != null) {
+            cb.deactivate();
+            currentSweepCallback = null;
+        }
+        // Drop any chunks the orphaned (or just-cancelled) consumer never
+        // got to. Otherwise the freshly started processing thread would
+        // burn its first second(s) draining stale frames from an old
+        // frequency plan, which produces visible glitches in the chart.
+        int drained = hwProcessingQueue.size();
+        if (drained > 0) {
+            hwProcessingQueue.clear();
+            droppedSamples.addAndGet(drained);
         }
     }
 
@@ -336,7 +496,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
     private static final long SWEEP_RETRY_MIN_MS = 1000;
     private static final long SWEEP_RETRY_MAX_MS = 15_000;
 
-    private void sweepLoop() throws IOException {
+    private void sweepLoop(HackRFSweepDataCallback callback) throws IOException {
         lock.lock();
         try {
             processingFuture = processingExec.submit(() -> {
@@ -366,16 +526,27 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                 fireHardwareStateChanged(false);
 
                 long started = System.nanoTime();
-                HackRFSweepNativeBridge.start(this,
-                        plan,
-                        settings.getFFTBinHz().getValue() * 1000,
-                        settings.getSamples().getValue(),
-                        settings.getGainLNA().getValue(),
-                        settings.getGainVGA().getValue(),
-                        settings.getAntennaPowerEnable().getValue(),
-                        settings.getAntennaLNA().getValue(),
-                        settings.getSelectedSerial().getValue());
-                long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
+                long elapsedMs;
+                boolean deviceBusy = false;
+                try {
+                    HackRFSweepNativeBridge.start(callback,
+                            plan,
+                            settings.getFFTBinHz().getValue() * 1000,
+                            settings.getSamples().getValue(),
+                            settings.getGainLNA().getValue(),
+                            settings.getGainVGA().getValue(),
+                            settings.getAntennaPowerEnable().getValue(),
+                            settings.getAntennaLNA().getValue(),
+                            settings.getSelectedSerial().getValue());
+                } catch (DeviceBusyException busy) {
+                    // The previous sweep is still inside libhackrf (orphan
+                    // path after stopSweep gave up). Treat exactly like
+                    // an immediate native failure: back off, retry. The
+                    // orphan will eventually return and free the lock.
+                    deviceBusy = true;
+                    LOG.warn("Native sweep lock busy: {}", busy.getMessage());
+                }
+                elapsedMs = (System.nanoTime() - started) / 1_000_000L;
                 fireHardwareStateChanged(false);
 
                 if (forceStopSweep) break;
@@ -384,11 +555,11 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                 // (device busy / unplugged / invalid params). Back off exponentially
                 // so we don't spam the native usage-text at 1 Hz.
                 long sleepMs;
-                if (elapsedMs < SWEEP_FAIL_THRESHOLD_MS) {
+                if (deviceBusy || elapsedMs < SWEEP_FAIL_THRESHOLD_MS) {
                     consecutiveFailures = Math.min(consecutiveFailures + 1, 10);
                     sleepMs = Math.min(SWEEP_RETRY_MAX_MS,
                             SWEEP_RETRY_MIN_MS * (1L << Math.min(consecutiveFailures - 1, 4)));
-                    if (consecutiveFailures == 1) {
+                    if (consecutiveFailures == 1 && !deviceBusy) {
                         LOG.warn("hackrf_sweep exited immediately (no device?). "
                                 + "Backing off {} ms before retry.", sleepMs);
                     }
@@ -502,6 +673,7 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                     showPeaks, showAverage, showMaxHold,
                     showRealtime);
 
+            framesProduced.incrementAndGet();
             for (Consumer<SpectrumFrame> consumer : frameConsumers) {
                 try {
                     consumer.accept(frame);
@@ -510,6 +682,25 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
                 }
             }
         }
+    }
+
+    /** Health-monitor accessors. Cheap, lock-free reads. */
+    public int getProcessingQueueSize() { return hwProcessingQueue.size(); }
+    public int getProcessingQueueCapacity() { return PROCESSING_QUEUE_CAPACITY; }
+    public long getDroppedSampleCount() { return droppedSamples.get(); }
+    public long getFramesProducedCount() { return framesProduced.get(); }
+    public long getChunksReceivedCount() { return chunksReceived.get(); }
+    /** True iff the user toggled "Pause" - processing thread silently
+     *  drops every frame in this state, which would otherwise look like
+     *  a lockup in the health log. */
+    public boolean isCapturingPaused() {
+        return settings.isCapturingPaused().getValue();
+    }
+    /** True iff the engine is currently sweeping (i.e. the user has
+     *  pressed Start). Used by the health log to suppress the "0 fps"
+     *  warning marker when the engine is intentionally idle. */
+    public boolean isRunningRequested() {
+        return settings.isRunningRequested().getValue();
     }
 
     private void fireHardwareStateChanged(boolean sendingData) {

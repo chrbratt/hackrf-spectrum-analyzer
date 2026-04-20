@@ -17,5 +17,9 @@ public final class NoOpWifiScanner implements WifiScanner {
 
     @Override public void requestScan() { /* no-op */ }
 
+    @Override public List<WifiAdapter> listAdapters() { return Collections.emptyList(); }
+
+    @Override public void setSelectedAdapter(String guidHex) { /* no-op */ }
+
     @Override public void close() { /* no-op */ }
 }

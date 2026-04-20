@@ -51,6 +51,33 @@ public class SettingsStore implements HackRFSettings {
     // Display tab.
     private final ModelValueBoolean frequencyAllocationVisible =
             new ModelValueBoolean("Allocation Overlay", false);
+    // AP markers (translucent boxes drawn on the spectrum chart at each
+    // visible Wi-Fi AP's centre frequency). Off by default so the chart
+    // stays clean for users who never open the Wi-Fi window. Opening the
+    // Wi-Fi window auto-enables them; closing it auto-disables again.
+    // The Display tab also exposes a manual toggle so users can keep the
+    // markers on without keeping the window open.
+    private final ModelValueBoolean apMarkersVisible =
+            new ModelValueBoolean("AP Markers", false);
+    /**
+     * Funnel waterfall mode. When enabled the waterfall is split into
+     * vertically stacked tiers with exponentially increasing strides
+     * ({1,2,4,8} by default), so the bottom of the chart shows
+     * compressed long-term history while the top stays at full
+     * temporal resolution. Default off so users get the familiar flat
+     * waterfall until they opt in from the Display tab.
+     */
+    private final ModelValueBoolean waterfallFunnel =
+            new ModelValueBoolean("Funnel Waterfall", false);
+    /**
+     * Peak fill opacity for AP markers, 1..100. The marker rectangle uses
+     * a vertical gradient that fades from this opacity at the top of the
+     * box (the RSSI line) down to fully transparent at the chart baseline,
+     * so a strong signal lights up its full footprint while a weak one is
+     * a faint hint. Adjustable from the Display tab.
+     */
+    private final ModelValueInt apMarkerOpacity =
+            new ModelValueInt("AP Marker Opacity", 35, 5, 5, 100);
     private final ModelValueInt gainLNA = new ModelValueInt("LNA Gain", 24, 8, 0, 40);
     private final ModelValueInt gainVGA = new ModelValueInt("VGA Gain", 8, 2, 0, 62);
     private final ModelValueBoolean isCapturingPaused = new ModelValueBoolean("Capturing Paused", false);
@@ -121,6 +148,16 @@ public class SettingsStore implements HackRFSettings {
     // runningRequested: false at startup so the user explicitly clicks Start
     //   in the new UI; SpectrumEngine no longer auto-starts on boot.
     private final ModelValue<String> selectedSerial = new ModelValue<>("Selected Serial", "");
+    /**
+     * Canonical hex GUID of the Wi-Fi adapter the user picked in the
+     * Wi-Fi window's adapter combo, or {@code ""} for the default
+     * "scan every adapter" behaviour. Mirrors
+     * {@code jspectrumanalyzer.wifi.WifiAdapter#ALL}; we duplicate the
+     * empty string here instead of importing the wifi package because
+     * the model layer has no other reason to know about that package.
+     */
+    private final ModelValue<String> selectedWifiAdapterGuid =
+            new ModelValue<>("Selected Wi-Fi Adapter", "");
     private final ModelValueBoolean runningRequested =
             new ModelValueBoolean("Sweep Running", false);
 
@@ -171,9 +208,13 @@ public class SettingsStore implements HackRFSettings {
     @Override public ModelValueBoolean isSpurRemoval() { return spurRemoval; }
 
     public ModelValue<String> getSelectedSerial() { return selectedSerial; }
+    public ModelValue<String> getSelectedWifiAdapterGuid() { return selectedWifiAdapterGuid; }
     public ModelValueBoolean isRunningRequested() { return runningRequested; }
     public ModelValue<FrequencyPlan> getFrequencyPlan() { return frequencyPlan; }
     public ModelValueBoolean isFrequencyAllocationVisible() { return frequencyAllocationVisible; }
+    public ModelValueBoolean isApMarkersVisible() { return apMarkersVisible; }
+    public ModelValueBoolean isWaterfallFunnel() { return waterfallFunnel; }
+    public ModelValueInt getApMarkerOpacity() { return apMarkerOpacity; }
     public ModelValue<GraphTheme> getGraphTheme() { return graphTheme; }
     public ModelValue<WaterfallPalette> getWaterfallTheme() { return waterfallTheme; }
 

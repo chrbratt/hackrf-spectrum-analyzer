@@ -3,6 +3,8 @@ package jspectrumanalyzer.nativebridge;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.sun.jna.CallbackThreadInitializer;
 import com.sun.jna.Memory;
@@ -39,6 +41,34 @@ public class HackRFSweepNativeBridge {
      */
     private static final int MAX_DEVICES = 32;
 
+    /**
+     * Mutual exclusion for the native sweep entry point. The DLL only
+     * supports one in-flight sweep, so a second {@link #start} call has
+     * to wait for the first to return.
+     *
+     * <p>Used to be implicit via {@code synchronized} on the method
+     * monitor, but that turned a wedged native sweep (the orphan path
+     * after {@code SpectrumEngine.stopSweep()} gives up) into a
+     * permanent deadlock: every subsequent restart attempt blocked
+     * forever on the monitor, and the app showed
+     * {@code [no native callbacks!]} indefinitely. Switching to a
+     * {@link ReentrantLock} with a bounded {@code tryLock} lets the
+     * second caller fail fast with a {@link DeviceBusyException} so
+     * the launcher can back off and try again instead of pegging on
+     * the lock.
+     */
+    private static final ReentrantLock NATIVE_LOCK = new ReentrantLock();
+
+    /**
+     * How long {@link #start} waits for the native lock before giving
+     * up. Long enough to cover normal back-to-back restarts (where the
+     * outgoing sweep returns within a few hundred ms of
+     * {@code hackrf_sweep_lib_stop()}), short enough that a wedged
+     * orphan sweep is reported promptly so the launcher's retry/back-
+     * off path can take over.
+     */
+    private static final long START_LOCK_TIMEOUT_MS = 2_000;
+
     static {
         // Force JNA to load jnidispatch.dll from the unpacked location so the
         // bundled copy is used instead of the (slower) jar-extracted one.
@@ -71,17 +101,20 @@ public class HackRFSweepNativeBridge {
      * Start a blocking sweep on the device with the given {@code serial}.
      * Pass {@code null} or {@code ""} to open whatever HackRF the OS hands
      * libhackrf first (legacy behaviour).
+     *
+     * @throws DeviceBusyException if another sweep is still inside the
+     *         native call after {@link #START_LOCK_TIMEOUT_MS}.
      */
-    public static synchronized void start(HackRFSweepDataCallback dataCallback,
-                                          int freq_min_MHz,
-                                          int freq_max_MHz,
-                                          int fft_bin_width,
-                                          int num_samples,
-                                          int lna_gain,
-                                          int vga_gain,
-                                          boolean antennaPowerEnable,
-                                          boolean internalLNA,
-                                          String serial) {
+    public static void start(HackRFSweepDataCallback dataCallback,
+                              int freq_min_MHz,
+                              int freq_max_MHz,
+                              int fft_bin_width,
+                              int num_samples,
+                              int lna_gain,
+                              int vga_gain,
+                              boolean antennaPowerEnable,
+                              boolean internalLNA,
+                              String serial) {
         // Single-range entry point routes through the multi-range path so the
         // native ABI only has to be exercised in one place.
         start(dataCallback,
@@ -95,54 +128,75 @@ public class HackRFSweepNativeBridge {
      * Multi-range overload. Allocates a contiguous native buffer holding the
      * plan's segment endpoints (libhackrf wants {@code uint16[2*N]}) and
      * delegates to {@code hackrf_sweep_lib_start_multi}.
+     *
+     * @throws DeviceBusyException if another sweep is still inside the
+     *         native call after {@link #START_LOCK_TIMEOUT_MS}.
      */
-    public static synchronized void start(HackRFSweepDataCallback dataCallback,
-                                          FrequencyPlan plan,
-                                          int fft_bin_width,
-                                          int num_samples,
-                                          int lna_gain,
-                                          int vga_gain,
-                                          boolean antennaPowerEnable,
-                                          boolean internalLNA,
-                                          String serial) {
-        hackrf_sweep_lib_start__fft_power_callback_callback callback =
-                new hackrf_sweep_lib_start__fft_power_callback_callback() {
-                    @Override
-                    public void apply(byte sweep_started, int bins,
-                                      DoubleByReference freqStart,
-                                      float fftBinWidth,
-                                      FloatByReference powerdBm) {
-                        double[] freqStartArr = bins == 0
-                                ? null
-                                : freqStart.getPointer().getDoubleArray(0, bins);
-                        float[] powerArr = bins == 0
-                                ? null
-                                : powerdBm.getPointer().getFloatArray(0, bins);
-                        dataCallback.newSpectrumData(sweep_started != 0,
-                                freqStartArr, fftBinWidth, powerArr);
-                    }
-                };
-        Native.setCallbackThreadInitializer(callback,
-                new CallbackThreadInitializer(true));
+    public static void start(HackRFSweepDataCallback dataCallback,
+                              FrequencyPlan plan,
+                              int fft_bin_width,
+                              int num_samples,
+                              int lna_gain,
+                              int vga_gain,
+                              boolean antennaPowerEnable,
+                              boolean internalLNA,
+                              String serial) {
+        boolean acquired;
+        try {
+            acquired = NATIVE_LOCK.tryLock(START_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new DeviceBusyException(
+                    "Interrupted while waiting for the native sweep lock");
+        }
+        if (!acquired) {
+            throw new DeviceBusyException(
+                    "Native sweep lock still held after "
+                    + START_LOCK_TIMEOUT_MS + " ms; an earlier sweep "
+                    + "has not returned from libhackrf yet.");
+        }
+        try {
+            hackrf_sweep_lib_start__fft_power_callback_callback callback =
+                    new hackrf_sweep_lib_start__fft_power_callback_callback() {
+                        @Override
+                        public void apply(byte sweep_started, int bins,
+                                          DoubleByReference freqStart,
+                                          float fftBinWidth,
+                                          FloatByReference powerdBm) {
+                            double[] freqStartArr = bins == 0
+                                    ? null
+                                    : freqStart.getPointer().getDoubleArray(0, bins);
+                            float[] powerArr = bins == 0
+                                    ? null
+                                    : powerdBm.getPointer().getFloatArray(0, bins);
+                            dataCallback.newSpectrumData(sweep_started != 0,
+                                    freqStartArr, fftBinWidth, powerArr);
+                        }
+                    };
+            Native.setCallbackThreadInitializer(callback,
+                    new CallbackThreadInitializer(true));
 
-        // Pack endpoints as {start0, end0, start1, end1, ...} uint16. JNA
-        // Memory zero-initialises and outlives the call duration as long as
-        // we keep a reference - the local variable here suffices because
-        // hackrf_sweep_lib_start_multi blocks until the sweep ends and the
-        // native side copies the buffer immediately into its own
-        // frequencies[] table.
-        short[] pairs = plan.toNativePairs();
-        Memory pairsBuf = new Memory((long) pairs.length * Short.BYTES);
-        pairsBuf.write(0, pairs, 0, pairs.length);
+            // Pack endpoints as {start0, end0, start1, end1, ...} uint16. JNA
+            // Memory zero-initialises and outlives the call duration as long as
+            // we keep a reference - the local variable here suffices because
+            // hackrf_sweep_lib_start_multi blocks until the sweep ends and the
+            // native side copies the buffer immediately into its own
+            // frequencies[] table.
+            short[] pairs = plan.toNativePairs();
+            Memory pairsBuf = new Memory((long) pairs.length * Short.BYTES);
+            pairsBuf.write(0, pairs, 0, pairs.length);
 
-        String openSerial = (serial == null) ? "" : serial;
-        HackrfSweepLibrary.hackrf_sweep_lib_start_multi(callback,
-                plan.segmentCount(), pairsBuf,
-                fft_bin_width, num_samples,
-                lna_gain, vga_gain,
-                antennaPowerEnable ? 1 : 0,
-                internalLNA ? 1 : 0,
-                openSerial);
+            String openSerial = (serial == null) ? "" : serial;
+            HackrfSweepLibrary.hackrf_sweep_lib_start_multi(callback,
+                    plan.segmentCount(), pairsBuf,
+                    fft_bin_width, num_samples,
+                    lna_gain, vga_gain,
+                    antennaPowerEnable ? 1 : 0,
+                    internalLNA ? 1 : 0,
+                    openSerial);
+        } finally {
+            NATIVE_LOCK.unlock();
+        }
     }
 
     public static void stop() {

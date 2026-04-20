@@ -22,6 +22,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import jspectrumanalyzer.core.HackRFSettings;
+import jspectrumanalyzer.fx.engine.SdrController;
 import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.util.FxControls;
 import jspectrumanalyzer.nativebridge.HackRFDeviceInfo;
@@ -64,6 +65,13 @@ public final class DeviceSection extends VBox {
     });
 
     private final SettingsStore settings;
+    /**
+     * Routed through this controller for the Start/Stop button so the
+     * radio's run-state has a single intent owner; the combo and the
+     * status mirrors keep reading directly from the model because they
+     * only observe state, they don't drive it.
+     */
+    private final SdrController sdrController;
 
     private final ComboBox<HackRFDeviceInfo> deviceCombo = new ComboBox<>();
     private final Button refreshBtn = new Button("Refresh");
@@ -73,8 +81,9 @@ public final class DeviceSection extends VBox {
     /** Guards against re-entrant updates when the combo is rebuilt. */
     private final AtomicBoolean updatingCombo = new AtomicBoolean(false);
 
-    public DeviceSection(SettingsStore settings) {
+    public DeviceSection(SettingsStore settings, SdrController sdrController) {
         this.settings = settings;
+        this.sdrController = sdrController;
         setSpacing(6);
 
         configureCombo();
@@ -148,8 +157,7 @@ public final class DeviceSection extends VBox {
                 "Start or stop streaming from the selected HackRF. The app no "
                 + "longer auto-starts on launch so you can pick the device "
                 + "first. Settings changes apply immediately while running.");
-        startStopBtn.setOnAction(e -> settings.isRunningRequested().setValue(
-                !settings.isRunningRequested().getValue()));
+        startStopBtn.setOnAction(e -> sdrController.toggleRunning());
     }
 
     private void wireRunStateMirror() {

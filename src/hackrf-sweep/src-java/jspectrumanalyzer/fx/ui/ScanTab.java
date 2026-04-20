@@ -15,6 +15,7 @@ import jspectrumanalyzer.core.FrequencyMultiRangePreset;
 import jspectrumanalyzer.core.FrequencyPlan;
 import jspectrumanalyzer.core.FrequencyPresets;
 import jspectrumanalyzer.core.FrequencyRange;
+import jspectrumanalyzer.fx.engine.SdrController;
 import jspectrumanalyzer.fx.frequency.FrequencyRangeSelector;
 import jspectrumanalyzer.fx.frequency.FrequencyRangeValidator;
 import jspectrumanalyzer.fx.model.FxModelBinder;
@@ -34,17 +35,30 @@ public final class ScanTab extends ScrollPane {
     private static final int[] FFT_PRESETS_SAMPLES = {4096, 8192, 16384, 32768, 65536, 131072};
 
     private final SettingsStore settings;
+    /**
+     * Single point of intent for retune / start / stop. Forwarded to
+     * the nested {@link DeviceSection} and used directly for slider
+     * writes, multi-band selection and the pan buttons - replacing
+     * the legacy direct {@link SettingsStore} mutators.
+     */
+    private final SdrController sdrController;
     private final FrequencyRangeValidator validator =
             new FrequencyRangeValidator(SettingsStore.FREQ_MIN_MHZ, SettingsStore.FREQ_MAX_MHZ);
 
-    public ScanTab(SettingsStore settings) {
+    public ScanTab(SettingsStore settings, SdrController sdrController) {
         this.settings = settings;
+        this.sdrController = sdrController;
         setFitToWidth(true);
         setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
 
         FrequencyRangeSelector rangeSelector = new FrequencyRangeSelector(validator,
                 settings.getFrequency().getValue());
-        FxModelBinder.bindObject(rangeSelector.rangeProperty(), settings.getFrequency());
+        // Slider / text-field writes flow through the controller so the
+        // engine sees a single intent stream; the read direction
+        // (model -> property) is still handled by the binder so the UI
+        // mirrors whatever the active source of truth currently is.
+        FxModelBinder.bindObject(rangeSelector.rangeProperty(), settings.getFrequency(),
+                sdrController::requestRetune);
         try {
             rangeSelector.setPresets(new FrequencyPresets().getList());
         } catch (FileNotFoundException ignored) {
@@ -53,7 +67,7 @@ public final class ScanTab extends ScrollPane {
         VBox content = new VBox(12);
         content.setPadding(new Insets(12));
         content.getChildren().addAll(
-                FxControls.section("Device", new DeviceSection(settings)),
+                FxControls.section("Device", new DeviceSection(settings, sdrController)),
                 FxControls.section("Frequency",
                         rangeSelector,
                         buildPanBar(),
@@ -146,7 +160,7 @@ public final class ScanTab extends ScrollPane {
         // valid edit; the combo just toggles whether the editor is shown.
         CustomMultiRangeEditor customEditor = new CustomMultiRangeEditor(
                 validator,
-                plan -> settings.getFrequencyPlan().setValue(plan));
+                sdrController::requestRetunePlan);
         customEditor.setVisible(false);
         customEditor.setManaged(false);
 
@@ -200,9 +214,41 @@ public final class ScanTab extends ScrollPane {
                                         settings.getFrequency().getValue());
                 customEditor.seedWith(seed);
             } else {
-                settings.getFrequencyPlan().setValue(newV.getPlan());
+                // Off -> requestRetunePlan(null) clears the plan;
+                // any other preset publishes its plan. SdrController
+                // dedups against the current value so re-selecting
+                // the active preset is a no-op.
+                sdrController.requestRetunePlan(newV.getPlan());
             }
         });
+
+        // Model -> combo: when something else changes the frequency plan
+        // (notably the Wi-Fi window picking "All bands" or returning to a
+        // single range), keep the combo selection in sync so the UI never
+        // silently lies about which preset is active. The setValue equality
+        // check inside ModelValue prevents the combo->model listener above
+        // from looping back and re-firing.
+        settings.getFrequencyPlan().addListener(() ->
+                javafx.application.Platform.runLater(() -> {
+                    FrequencyPlan current = settings.getFrequencyPlan().getValue();
+                    FrequencyMultiRangePreset target = FrequencyMultiRangePreset.OFF;
+                    if (current != null) {
+                        for (FrequencyMultiRangePreset p : combo.getItems()) {
+                            if (p.getPlan() != null && p.getPlan().equals(current)) {
+                                target = p;
+                                break;
+                            }
+                        }
+                        // Plan exists but no preset matches: must be a custom
+                        // multi-range; switch to CUSTOM so the editor opens.
+                        if (target == FrequencyMultiRangePreset.OFF) {
+                            target = FrequencyMultiRangePreset.CUSTOM;
+                        }
+                    }
+                    if (combo.getValue() != target) {
+                        combo.getSelectionModel().select(target);
+                    }
+                }));
         FxControls.withTooltip(combo,
                 "Stitch multiple bands into a single chart by removing the dead air "
                 + "between them. Wi-Fi 2.4 + 5 + 6E sweeps three regulatory sub-bands "
@@ -266,6 +312,6 @@ public final class ScanTab extends ScrollPane {
         int delta = (int) Math.round(span * fraction);
         int newStart = cur.getStartMHz() + delta;
         int newEnd = cur.getEndMHz() + delta;
-        settings.getFrequency().setValue(validator.coerce(newStart, newEnd));
+        sdrController.requestRetune(validator.coerce(newStart, newEnd));
     }
 }
