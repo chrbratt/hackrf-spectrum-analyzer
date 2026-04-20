@@ -237,6 +237,68 @@
     -fx-font-size: 12px;
 }
 
+/* Insight summary card at the top of the Wi-Fi window. Uses the
+   teal/cyan ramp (-fx-accent area) so it reads as "this is the
+   important live status box" rather than a static hint, and so it
+   distinguishes from the purple wifi-mode-badge above without
+   overwhelming the rest of the panel. */
+.wifi-insight-card {
+    -fx-background-color: #1a2730;
+    -fx-border-color: #2f9aa6;
+    -fx-border-width: 1;
+    -fx-background-radius: 6;
+    -fx-border-radius: 6;
+}
+
+.wifi-insight-headline {
+    -fx-text-fill: #9be8f0;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+.wifi-insight-line {
+    -fx-text-fill: #d4e8eb;
+    -fx-font-size: 12px;
+}
+
+/* Per-section "How to read" sub-caption. Sits directly under the
+   section title; visually subordinated so the title reads first. */
+.wifi-section-howto {
+    -fx-text-fill: #9aa0b4;
+    -fx-font-size: 11px;
+    -fx-font-style: italic;
+    -fx-padding: 0 0 4 0;
+}
+
+/* TitledPane chrome for collapsible Wi-Fi sections - matches the dark
+   theme and gives the title the same accent colour as
+   .settings-section-title so collapsed/expanded sections read as
+   first-class section headers, not as "extra" widgets. */
+.titled-pane > .title {
+    -fx-background-color: #1f1f24;
+    -fx-padding: 6 10 6 10;
+    -fx-background-radius: 4;
+    -fx-border-color: #2f2f35;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}
+
+.titled-pane > .title > .text {
+    -fx-fill: -fx-accent;
+    -fx-font-weight: bold;
+    -fx-font-size: 13px;
+}
+
+.titled-pane > .title > .arrow-button .arrow {
+    -fx-background-color: -fx-accent;
+}
+
+.titled-pane > *.content {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 8 4 4 4;
+}
+
 .palette-readout {
     -fx-text-fill: #aaa;
     -fx-font-family: "JetBrains Mono", "Consolas", monospace;

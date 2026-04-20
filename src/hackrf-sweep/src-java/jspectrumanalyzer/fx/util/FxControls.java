@@ -140,6 +140,53 @@ public final class FxControls {
         return box;
     }
 
+    /**
+     * Section that leads with a one-line "how to read this" hint
+     * immediately under the title. Designed for the Wi-Fi window's
+     * pedagogical layout where every panel needs to orient a new user
+     * before they look at the data. The hint is shorter than the
+     * section's existing tooltip - it is the "what" rather than the
+     * "how / why" - so users get oriented at a glance and only reach
+     * for the tooltip when they want detail.
+     */
+    public static VBox sectionWithHowTo(String title, String howToRead, Node... children) {
+        VBox box = new VBox(4);
+        box.setPadding(new Insets(4, 0, 8, 0));
+        box.getChildren().add(sectionTitle(title));
+        if (howToRead != null && !howToRead.isBlank()) {
+            javafx.scene.control.Label hint = new javafx.scene.control.Label(howToRead);
+            hint.setWrapText(true);
+            hint.getStyleClass().add("wifi-section-howto");
+            box.getChildren().add(hint);
+        }
+        for (Node n : children) box.getChildren().add(n);
+        return box;
+    }
+
+    /**
+     * Wrap a content node in a {@link javafx.scene.control.TitledPane}
+     * so the user can collapse it. The title font matches
+     * {@code .settings-section-title} via the {@code .titled-pane}
+     * theming in {@code dark.css}, so collapsed and expanded panes read
+     * as the same kind of heading - they just have a disclosure arrow.
+     *
+     * @param title          heading shown on the pane bar
+     * @param expanded       whether to start expanded - pass false for
+     *                       sections the user only occasionally needs
+     *                       (capture / advanced / experimental)
+     * @param content        single content node; wrap multiple children
+     *                       in a {@link VBox} before calling
+     */
+    public static javafx.scene.control.TitledPane collapsible(String title,
+                                                              boolean expanded,
+                                                              Node content) {
+        javafx.scene.control.TitledPane tp = new javafx.scene.control.TitledPane(title, content);
+        tp.setExpanded(expanded);
+        tp.setCollapsible(true);
+        tp.setAnimated(true);
+        return tp;
+    }
+
     public static GridPane gridForm() {
         GridPane grid = new GridPane();
         grid.setHgap(8);

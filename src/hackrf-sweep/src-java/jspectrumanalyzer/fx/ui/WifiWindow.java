@@ -23,6 +23,7 @@ import javafx.scene.control.Spinner;
 import javafx.scene.control.SpinnerValueFactory;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
+import javafx.scene.control.TitledPane;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.HBox;
@@ -168,6 +169,15 @@ public final class WifiWindow {
     /** Latest unfiltered snapshot pushed by the scan service (FX-thread only). */
     private List<WifiAccessPoint> latestSnapshot = List.of();
 
+    /** Latest occupancy snapshot, cached so the insight card can use it. */
+    private ChannelOccupancyService.Snapshot latestOccupancy;
+
+    /**
+     * Plain-English "what am I looking at" card pinned to the top of
+     * the window. See {@link WifiInsightCard} for the wording rules.
+     */
+    private final WifiInsightCard insightCard;
+
     /** True while we're programmatically updating spinners after a band swap. */
     private boolean suppressEvents = false;
 
@@ -201,15 +211,19 @@ public final class WifiWindow {
         this.interfererListView = new InterfererListView();
         this.beaconStore = beaconStore;
         this.monitorCapturePanel = new MonitorCapturePanel(monitorCapture, beaconStore);
+        this.insightCard = new WifiInsightCard(beaconStore);
         // Refresh the AP table when the beacon store learns a new
         // hidden-SSID name so the table cell flips from "(hidden)" to
         // "(hidden: name)" without waiting for the next 1 s scan tick.
         // Same listener also re-renders the density chart overlay so
         // its channel labels pick up the resolved SSID at the same
-        // moment the table does, avoiding a confusing two-place lag.
+        // moment the table does, plus the insight card so its
+        // "hidden SSIDs resolved" line is always honest about what the
+        // capture pipeline has learned.
         beaconStore.addListener(() -> Platform.runLater(() -> {
             apTable.refresh();
             densityView.setAccessPoints(latestSnapshot);
+            refreshInsight();
         }));
 
         bandCombo.getItems().addAll(WifiBand.values());
@@ -262,10 +276,15 @@ public final class WifiWindow {
         // a ~30-element list, but multiplied by sweep rate this becomes
         // a steady leak that froze the app after a few minutes).
         occupancyService.addListener(
-                new FxCoalescingDispatcher<>(occupancyView::setSnapshot));
+                new FxCoalescingDispatcher<>(snap -> {
+                    latestOccupancy = snap;
+                    occupancyView.setSnapshot(snap);
+                    refreshInsight();
+                }));
         // Seed with whatever the service already has so the rows render
         // immediately on first show instead of waiting for the first sweep.
-        occupancyView.setSnapshot(occupancyService.getLatest());
+        latestOccupancy = occupancyService.getLatest();
+        occupancyView.setSnapshot(latestOccupancy);
         // Co/adjacent-channel counts arrive on the scan stream's cadence
         // (much slower than spectrum frames). Push them into the same
         // view so the C/A labels next to each channel bar update live as
@@ -292,6 +311,7 @@ public final class WifiWindow {
             // narrows the spectrum but leaves "filter to scan range"
             // OFF for the table.
             densityView.setAccessPoints(latestSnapshot);
+            refreshInsight();
         }));
 
         // React to scan-range changes from anywhere (this window or the main
@@ -305,94 +325,125 @@ public final class WifiWindow {
         settings.getFrequency().addListener(
                 () -> Platform.runLater(this::onScanPlanChanged));
 
+        // ---------------------------- Header strip
         Label badge = new Label(
-                "Wi-Fi window: pick a band above to retune the SDR sweep. "
-                + "The AP list reflects whatever the spectrum is scanning. "
-                + "Close this window any time - the spectrum keeps running.");
+                "Pick a band below and the SDR will sweep it. "
+                + "Everything on this page reflects what is currently in the air.");
         badge.setWrapText(true);
         badge.getStyleClass().add("wifi-mode-badge");
 
-        VBox apSection = FxControls.section("Visible access points",
+        // ---------------------------- 1. Survey: AP table
+        // The AP table is the most concrete artifact a user looks at,
+        // so it stays always-expanded and at the top of the live data.
+        // The two checkboxes that affect *what* the table shows live in
+        // the table's own card so they read as table options, not as
+        // global Wi-Fi options.
+        VBox apSection = FxControls.sectionWithHowTo(
+                "Visible access points",
+                "Live list from the OS Wi-Fi scanner. Click a row to load its 60 s RSSI trend below. "
+                + "Sortable columns; \"(hidden)\" rows reveal a name when monitor capture catches a probe response.",
                 filterToScanRangeBox, apMarkersBox, apCountsLabel, apTable);
         VBox.setVgrow(apTable, Priority.ALWAYS);
         apTable.setPrefHeight(280);
 
-        // Trend strip is its own section so the heading reads consistently
-        // with the rest of the window and the chart pins to the section's
-        // full width without distorting when the window resizes.
-        trendChart.widthProperty().bind(apSection.widthProperty().subtract(24));
-        VBox trendSection = FxControls.section("Selected AP - rolling 60 s RSSI", trendChart);
-
-        occupancyView.widthProperty().bind(apSection.widthProperty().subtract(24));
+        // ---------------------------- 2. Channel utilization (responsive 2-col)
+        // Duty cycle and density chart answer the same question - "which
+        // channels are busy, and for how long" - from two angles, so we
+        // show them side by side when the window is wide enough so the
+        // user can correlate the two without scrolling. The HBox falls
+        // back to single-column on a narrow window (< 880 px) so the
+        // density chart stays readable at small sizes.
         long winMin = ChannelOccupancyService.DEFAULT_WINDOW_MS / 60_000L;
-        VBox occupancySection = FxControls.section(
-                String.format("Channel duty cycle (rolling %d min, threshold %.0f dBm)",
-                        winMin,
-                        ChannelOccupancyService.DEFAULT_THRESHOLD_DBM),
+        VBox occupancyWrap = new VBox(4,
+                captionLabel(String.format("Per-channel duty (last %d min, signals stronger than %.0f dBm)",
+                        winMin, ChannelOccupancyService.DEFAULT_THRESHOLD_DBM)),
                 occupancyView);
-
-        // Density chart: 2D histogram of (frequency, dBm) cell counts.
-        // Coalescing dispatcher is critical here: setSnapshot rebuilds a
-        // ~600 000-pixel WritableImage on the FX thread, which can take
-        // tens of ms. Without coalescing, every engine snapshot enqueued
-        // a fresh runLater holding a ~2.4 MB int[] - the queue grew
-        // unbounded once the FX thread fell behind, eventually freezing
-        // the app under GC pressure.
-        densityView.widthProperty().bind(apSection.widthProperty().subtract(24));
+        VBox densityWrap = new VBox(4,
+                captionLabel("Density chart (frequency x dBm x count) - persistent streaks = real APs"),
+                densityView);
         densityView.setHeight(220);
         densityService.addListener(
                 new FxCoalescingDispatcher<>(densityView::setSnapshot));
         densityView.setSnapshot(densityService.getLatest());
-        Label densityHint = new Label(
-                "Vertical streaks = signals that persisted across many sweeps. "
-                + "Faint smears = transient bursts. "
-                + "Colour ramp matches the waterfall theme picked in Display.");
-        densityHint.setWrapText(true);
-        densityHint.getStyleClass().add("preset-caption");
-        VBox densitySection = FxControls.section("Density chart (frequency x dBm x count)",
-                densityHint, densityView);
 
-        // Interferer classifier list. Coalescing dispatcher keeps at most
-        // one runLater in flight; the classifier already publishes only
-        // every Nth frame but coalescing makes the FX side robust against
-        // any future cadence change without revisiting this site.
+        HBox channelsRow = new HBox(12, occupancyWrap, densityWrap);
+        HBox.setHgrow(occupancyWrap, Priority.ALWAYS);
+        HBox.setHgrow(densityWrap, Priority.ALWAYS);
+        occupancyWrap.setMaxWidth(Double.MAX_VALUE);
+        densityWrap.setMaxWidth(Double.MAX_VALUE);
+        // Bind each canvas's width to its wrapper so the heatmap
+        // resizes when the user resizes the window. The HBox already
+        // distributes the available space evenly between the two
+        // wrappers via Hgrow=ALWAYS, so we don't need a manual /2.
+        occupancyView.widthProperty().bind(occupancyWrap.widthProperty());
+        densityView.widthProperty().bind(densityWrap.widthProperty());
+
+        VBox channelSection = FxControls.sectionWithHowTo(
+                "Channel utilization",
+                "Two views of the same question: which channels are busy, and for how long. "
+                + "Tall bars on the left = channels saturated by Wi-Fi traffic now. "
+                + "Bright streaks on the right = signals that have been sitting on a channel for many sweeps.",
+                channelsRow);
+
+        // ---------------------------- 3. Trend strip (collapsible, default open)
+        trendChart.widthProperty().bind(apSection.widthProperty().subtract(24));
+        VBox trendBody = FxControls.sectionWithHowTo(
+                "Selected AP - rolling 60 s RSSI",
+                "Pick a row in the AP table above. Higher (less negative) dBm = stronger signal. "
+                + "Watch for periodic dips - they often correlate with neighbours' bursts on the same channel.",
+                trendChart);
+        TitledPane trendPane = FxControls.collapsible("Selected AP trend", true, trendBody);
+
+        // ---------------------------- 4. Other RF (collapsible, default closed)
+        // Interferers belong in the Wi-Fi window because they share the
+        // 2.4 GHz band, but a typical user opens this window to look at
+        // their Wi-Fi. Default-collapsed keeps the page compact; users
+        // who hunt for a microwave / video bridge / Zigbee mesh just
+        // expand it.
         interfererClassifier.addListener(
                 new FxCoalescingDispatcher<>(interfererListView::setSnapshot));
         interfererListView.setSnapshot(interfererClassifier.getLatest());
-        Label interfererHint = new Label(
-                "Heuristic classification of non-Wi-Fi 2.4 GHz signals. "
-                + "Detection is rule-based (bandwidth + sweep-to-sweep variance); "
-                + "false positives are possible in noisy environments. "
-                + "Wi-Fi APs are filtered out automatically.");
-        interfererHint.setWrapText(true);
-        interfererHint.getStyleClass().add("preset-caption");
-        VBox interfererSection = FxControls.section("Detected interferers",
-                interfererHint, interfererListView);
+        VBox interfererBody = FxControls.sectionWithHowTo(
+                "Detected interferers",
+                "Heuristic classification of non-Wi-Fi 2.4 GHz signals (bandwidth + sweep-to-sweep variance). "
+                + "Wi-Fi APs are filtered out. False positives are possible in noisy environments.",
+                interfererListView);
+        TitledPane interfererPane = FxControls.collapsible(
+                "Other RF in 2.4 GHz (interferers)", false, interfererBody);
 
-        // Phase-2 capture experiment: at the bottom of the window so it
-        // never shoves the read-only Wi-Fi survey out of view, and so
-        // accidental Start clicks are unlikely while the user is just
-        // browsing APs above.
-        VBox monitorCaptureSection = FxControls.section(
-                "Monitor capture (experimental, requires Npcap)",
+        // ---------------------------- 5. Monitor capture (collapsible, default closed)
+        // Phase-2 experiment lives behind a collapsed pane at the
+        // bottom: it requires Npcap, can lock the OS adapter, and is
+        // not what most users open this window for. Hiding it by
+        // default avoids accidental Start clicks while still keeping
+        // it discoverable.
+        TitledPane capturePane = FxControls.collapsible(
+                "Monitor capture (advanced, requires Npcap)", false,
                 monitorCapturePanel.node());
+
+        // ---------------------------- 6. Setup (collapsible, default open)
+        // Adapter + scan range live in a single Setup pane so a user
+        // who has dialled in their preferred band can collapse it once
+        // and stop staring at config controls. Default-expanded so the
+        // first-time user sees the band picker without hunting.
+        VBox setupBody = new VBox(10,
+                FxControls.labeled("Wi-Fi adapter", buildAdapterCombo()),
+                adapterHintLabel,
+                FxControls.labeled("Scan band", bandCombo),
+                rangeRow,
+                rangeReadout,
+                scanStatusLabel);
+        TitledPane setupPane = FxControls.collapsible("Setup (adapter + scan range)", true, setupBody);
 
         VBox content = new VBox(12,
                 badge,
-                FxControls.section("Wi-Fi adapter",
-                        FxControls.labeled("Use", buildAdapterCombo()),
-                        adapterHintLabel),
-                FxControls.section("Spectrum scan range",
-                        FxControls.labeled("Band", bandCombo),
-                        rangeRow,
-                        rangeReadout,
-                        scanStatusLabel),
+                insightCard,
+                setupPane,
                 apSection,
-                trendSection,
-                occupancySection,
-                densitySection,
-                interfererSection,
-                monitorCaptureSection);
+                channelSection,
+                trendPane,
+                interfererPane,
+                capturePane);
         content.setPadding(new Insets(12));
 
         ScrollPane scroller = new ScrollPane(content);
@@ -465,6 +516,7 @@ public final class WifiWindow {
         // "5 GHz" instead of forcing "All bands".
         syncFromSettings();
         applyApSnapshot();
+        refreshInsight();
     }
 
     /**
@@ -763,6 +815,28 @@ public final class WifiWindow {
         syncFromSettings();
         updateScanStatus();
         applyApSnapshot();
+        refreshInsight();
+    }
+
+    /**
+     * Recompute the live insight card from whatever inputs we currently
+     * have cached. Callers fire this from any of the three input
+     * streams (scan / occupancy / plan) because the insight wording
+     * depends on all three; recomputing more often than strictly
+     * needed is harmless because the worst case is a small text label
+     * update and the underlying class is purely functional.
+     */
+    private void refreshInsight() {
+        insightCard.recompute(latestSnapshot, latestOccupancy,
+                settings.getEffectivePlan());
+    }
+
+    /** Caption-style {@link Label} used inside cards under each chart. */
+    private static Label captionLabel(String text) {
+        Label l = new Label(text);
+        l.setWrapText(true);
+        l.getStyleClass().add("preset-caption");
+        return l;
     }
 
     /**
