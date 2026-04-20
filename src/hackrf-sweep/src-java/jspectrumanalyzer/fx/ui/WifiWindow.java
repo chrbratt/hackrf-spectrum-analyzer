@@ -122,6 +122,15 @@ public final class WifiWindow {
      */
     private final MonitorCapturePanel monitorCapturePanel;
 
+    /**
+     * Shared {@link jspectrumanalyzer.wifi.capture.BeaconStore}. Read
+     * by the AP table to substitute a captured probe-response SSID
+     * for the literal {@code "(hidden)"} placeholder, and passed
+     * through to the {@link MonitorCapturePanel} where the capture
+     * polling thread populates it.
+     */
+    private final jspectrumanalyzer.wifi.capture.BeaconStore beaconStore;
+
     private final Stage stage = new Stage();
 
     private final ComboBox<AdapterChoice> adapterCombo = new ComboBox<>();
@@ -179,17 +188,29 @@ public final class WifiWindow {
                       jspectrumanalyzer.wifi.ChannelInterferenceService interferenceService,
                       DensityHistogramService densityService,
                       InterfererClassifier interfererClassifier,
-                      MonitorModeCapture monitorCapture) {
+                      MonitorModeCapture monitorCapture,
+                      jspectrumanalyzer.wifi.capture.BeaconStore beaconStore) {
         this.settings = settings;
         this.sdrController = sdrController;
         this.wifiScanService = wifiScanService;
         this.occupancyService = occupancyService;
         this.interferenceService = interferenceService;
         this.densityService = densityService;
-        this.densityView = new DensityChartView(settings);
+        this.densityView = new DensityChartView(settings, beaconStore);
         this.interfererClassifier = interfererClassifier;
         this.interfererListView = new InterfererListView();
-        this.monitorCapturePanel = new MonitorCapturePanel(monitorCapture);
+        this.beaconStore = beaconStore;
+        this.monitorCapturePanel = new MonitorCapturePanel(monitorCapture, beaconStore);
+        // Refresh the AP table when the beacon store learns a new
+        // hidden-SSID name so the table cell flips from "(hidden)" to
+        // "(hidden: name)" without waiting for the next 1 s scan tick.
+        // Same listener also re-renders the density chart overlay so
+        // its channel labels pick up the resolved SSID at the same
+        // moment the table does, avoiding a confusing two-place lag.
+        beaconStore.addListener(() -> Platform.runLater(() -> {
+            apTable.refresh();
+            densityView.setAccessPoints(latestSnapshot);
+        }));
 
         bandCombo.getItems().addAll(WifiBand.values());
         bandCombo.getSelectionModel().select(WifiBand.ALL);
@@ -230,7 +251,7 @@ public final class WifiWindow {
         configureApTable();
         apCountsLabel.getStyleClass().add("preset-caption");
 
-        trendChart = new ApTrendChart(wifiScanService);
+        trendChart = new ApTrendChart(wifiScanService, beaconStore);
         trendChart.setHeight(140);
         trendChart.heightProperty().addListener((obs, o, n) -> trendChart.refresh());
 
@@ -264,6 +285,13 @@ public final class WifiWindow {
             latestSnapshot = (snap == null) ? List.of() : snap;
             applyApSnapshot();
             trendChart.refresh();
+            // Feed the unfiltered list - DensityChartView clips to the
+            // current sweep range itself and the band picker above the
+            // chart already drives that range, so passing the full
+            // snapshot keeps the overlay accurate when the user
+            // narrows the spectrum but leaves "filter to scan range"
+            // OFF for the table.
+            densityView.setAccessPoints(latestSnapshot);
         }));
 
         // React to scan-range changes from anywhere (this window or the main
@@ -584,10 +612,24 @@ public final class WifiWindow {
         return row;
     }
 
+    /**
+     * Pick the best display name for a row in the AP table. Same
+     * three-tier resolution as {@code ApMarkerCanvas.displaySsidFor}:
+     * real SSID > probe-response-discovered SSID > literal "(hidden)".
+     * Kept here as a small private helper rather than promoted to a
+     * shared utility because the call site is a one-liner and inlining
+     * makes the table-column wiring readable.
+     */
+    private String displaySsidFor(WifiAccessPoint ap) {
+        if (!ap.ssid().isEmpty()) return ap.ssid();
+        return beaconStore.discoveredSsid(ap.bssid())
+                .map(name -> "(hidden: " + name + ")")
+                .orElse("(hidden)");
+    }
+
     private void configureApTable() {
         TableColumn<WifiAccessPoint, String> ssidCol = new TableColumn<>("SSID");
-        ssidCol.setCellValueFactory(d -> new SimpleStringProperty(
-                d.getValue().ssid().isEmpty() ? "(hidden)" : d.getValue().ssid()));
+        ssidCol.setCellValueFactory(d -> new SimpleStringProperty(displaySsidFor(d.getValue())));
         ssidCol.setPrefWidth(160);
 
         TableColumn<WifiAccessPoint, String> bssidCol = new TableColumn<>("BSSID");

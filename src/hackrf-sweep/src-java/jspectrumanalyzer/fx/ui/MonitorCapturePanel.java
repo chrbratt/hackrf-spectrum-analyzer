@@ -17,10 +17,12 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import jspectrumanalyzer.fx.util.FxControls;
+import jspectrumanalyzer.wifi.capture.BeaconStore;
 import jspectrumanalyzer.wifi.capture.CaptureStats;
 import jspectrumanalyzer.wifi.capture.MonitorAdapter;
 import jspectrumanalyzer.wifi.capture.MonitorModeCapture;
 import jspectrumanalyzer.wifi.capture.MonitorModeException;
+import jspectrumanalyzer.wifi.capture.ieee80211.BssLoad;
 
 /**
  * Experimental Phase-2 UI: live counters for an Npcap monitor-mode
@@ -58,6 +60,14 @@ public final class MonitorCapturePanel {
 
     private final MonitorModeCapture capture;
     private final CaptureStats stats = new CaptureStats();
+    /**
+     * Shared beacon-derived facts. The capture polling thread feeds
+     * raw frames into this store; the rest of the UI (AP table, marker
+     * overlay, trend chart) reads from it via
+     * {@link BeaconStore#discoveredSsid(String)}. App-scope ownership
+     * means the resolved SSIDs survive a Wi-Fi window close/reopen.
+     */
+    private final BeaconStore beaconStore;
 
     private final VBox root = new VBox(8);
 
@@ -69,12 +79,22 @@ public final class MonitorCapturePanel {
     private final Label typeBreakdownLabel = new Label();
     private final Label mgmtBreakdownLabel = new Label();
     private final Label rssiLabel = new Label();
+    /**
+     * Phase-2 hidden-SSID-resolution and BSS-Load summary. Populated
+     * from {@link BeaconStore} every UI tick. Kept as separate labels
+     * (not a single combined string) so the resolved SSIDs and the
+     * load percentages can be styled differently if we ever add CSS
+     * for them.
+     */
+    private final Label discoveredLabel = new Label();
+    private final Label bssLoadLabel = new Label();
 
     private final Timeline refreshTimer;
     private boolean running = false;
 
-    public MonitorCapturePanel(MonitorModeCapture capture) {
+    public MonitorCapturePanel(MonitorModeCapture capture, BeaconStore beaconStore) {
         this.capture = capture;
+        this.beaconStore = beaconStore;
 
         if (!capture.isAvailable()) {
             // Backend not ready (no Npcap, or NoOp implementation).
@@ -123,7 +143,9 @@ public final class MonitorCapturePanel {
                 totalLabel,
                 typeBreakdownLabel,
                 mgmtBreakdownLabel,
-                rssiLabel);
+                rssiLabel,
+                discoveredLabel,
+                bssLoadLabel);
 
         refreshTimer = new Timeline(new KeyFrame(
                 Duration.millis(UI_REFRESH_MS), e -> refreshLabels()));
@@ -209,6 +231,8 @@ public final class MonitorCapturePanel {
         typeBreakdownLabel.getStyleClass().add("preset-caption");
         mgmtBreakdownLabel.getStyleClass().add("preset-caption");
         rssiLabel.getStyleClass().add("preset-caption");
+        discoveredLabel.getStyleClass().add("preset-caption");
+        bssLoadLabel.getStyleClass().add("preset-caption");
     }
 
     // ---------------------------------------------------------------- Lifecycle
@@ -221,12 +245,15 @@ public final class MonitorCapturePanel {
         }
         int channelMhz = channelSpinner.getValue();
         stats.reset();
+        beaconStore.reset();
         try {
             capture.start(adapter, channelMhz, frame -> {
                 // Runs on the capture poll thread - keep it cheap.
-                // CaptureStats.accept is synchronized; reads happen from
-                // the FX timer at 4 Hz so the contention is negligible.
+                // Both consumers are synchronized internally and only
+                // touch a small amount of state per frame; the UI tick
+                // reads at 4 Hz so contention is negligible.
                 stats.accept(frame);
+                beaconStore.accept(frame);
             });
         } catch (MonitorModeException ex) {
             statusLabel.setText("Capture failed: " + ex.getMessage());
@@ -277,6 +304,58 @@ public final class MonitorCapturePanel {
                     .reduce((a, b) -> a + "  |  " + b)
                     .orElse("");
             rssiLabel.setText("Top BSSIDs: " + top);
+        }
+        refreshBeaconLabels();
+    }
+
+    /**
+     * Render the two beacon-store-derived rows: discovered hidden SSIDs
+     * (as a compact "BSSID -> name" list, capped at 4) and the top BSS
+     * Load advertisements (as "BSSID  N% util  S sta", capped at 4).
+     * Both labels are intentionally short - they sit below the existing
+     * counter rows and the panel must stay readable at the default
+     * window width.
+     */
+    private void refreshBeaconLabels() {
+        var discovered = beaconStore.discoveredSsidSnapshot();
+        if (discovered.isEmpty()) {
+            discoveredLabel.setText("Hidden SSIDs resolved: 0 (capture probe-responses to discover them)");
+        } else {
+            // Sort by BSSID purely for stable rendering; the order has
+            // no semantic meaning since the store only holds last-seen
+            // names.
+            String list = discovered.entrySet().stream()
+                    .sorted(java.util.Map.Entry.comparingByKey())
+                    .limit(4)
+                    .map(e -> e.getKey() + " -> " + e.getValue())
+                    .reduce((a, b) -> a + "  |  " + b)
+                    .orElse("");
+            int extra = discovered.size() - Math.min(4, discovered.size());
+            String suffix = extra > 0 ? "  (+" + extra + " more)" : "";
+            discoveredLabel.setText("Hidden SSIDs resolved: " + discovered.size()
+                    + " - " + list + suffix);
+        }
+
+        var loads = beaconStore.bssLoadSnapshot();
+        if (loads.isEmpty()) {
+            bssLoadLabel.setText("BSS Load: (no AP advertised this IE in any captured beacon)");
+        } else {
+            // Sort by self-reported channel utilization descending so
+            // the busiest AP shows first - that is the one the user
+            // actually wants to know about for channel planning.
+            String top = loads.entrySet().stream()
+                    .sorted((a, b) -> Integer.compare(
+                            b.getValue().channelUtilizationPercent(),
+                            a.getValue().channelUtilizationPercent()))
+                    .limit(4)
+                    .map(e -> {
+                        BssLoad l = e.getValue();
+                        return String.format("%s  %d%% util  %d sta",
+                                e.getKey(), l.channelUtilizationPercent(), l.stationCount());
+                    })
+                    .reduce((a, b) -> a + "  |  " + b)
+                    .orElse("");
+            bssLoadLabel.setText("BSS Load top: " + top);
         }
     }
 }

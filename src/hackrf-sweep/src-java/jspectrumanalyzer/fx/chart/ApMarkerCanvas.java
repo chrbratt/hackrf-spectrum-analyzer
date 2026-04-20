@@ -136,8 +136,13 @@ public final class ApMarkerCanvas extends Canvas {
      */
     private Double hoverX, hoverY;
 
-    public ApMarkerCanvas(SettingsStore settings) {
+    /** Source of probe-response-derived hidden SSID lookups; never null. */
+    private final jspectrumanalyzer.wifi.capture.BeaconStore beaconStore;
+
+    public ApMarkerCanvas(SettingsStore settings,
+                          jspectrumanalyzer.wifi.capture.BeaconStore beaconStore) {
         this.settings = settings;
+        this.beaconStore = beaconStore;
         // Pass-through so the chart's drag-zoom and context-menu handlers keep
         // receiving every mouse event - markers are decorative.
         setMouseTransparent(true);
@@ -191,7 +196,16 @@ public final class ApMarkerCanvas extends Canvas {
         return Math.abs(a - b) < 0.5;
     }
 
-    private void redraw() {
+    /**
+     * Repaint the marker layer. Public so callers that change inputs we
+     * derive from (for example
+     * {@link jspectrumanalyzer.wifi.capture.BeaconStore} resolving a
+     * hidden SSID) can poke us without waiting for the next 1 s scan
+     * tick. Cheap when there are no APs - returns after the canvas
+     * clear; the heavy projection / clustering work only runs when
+     * there is something to draw.
+     */
+    public void redraw() {
         GraphicsContext g = getGraphicsContext2D();
         g.clearRect(0, 0, getWidth(), getHeight());
         drawnAps.clear();
@@ -254,7 +268,7 @@ public final class ApMarkerCanvas extends Canvas {
             double yTop = areaTop + (yMaxDbm - rssi) / dbmSpan * dataArea.getHeight();
             if (yTop > areaBottom) yTop = areaBottom;
 
-            String ssid = ap.ssid().isEmpty() ? "(hidden)" : ap.ssid();
+            String ssid = displaySsidFor(ap);
 
             markers.add(new Marker(ap, List.of(ap), band,
                     xCentre, clampedStart, clampedEnd, yTop, ssid));
@@ -395,6 +409,29 @@ public final class ApMarkerCanvas extends Canvas {
      * skips the AP) rather than throwing because a single odd record
      * from the platform stack should not break the whole overlay.
      */
+    /**
+     * Pick the best display name for one AP. Order:
+     * <ol>
+     *   <li>The OS-reported SSID, when present (real network name).</li>
+     *   <li>The discovered SSID from a captured probe response, when
+     *       monitor-mode capture has resolved this BSSID. Rendered as
+     *       {@code "(hidden: name)"} so the user can see the AP is
+     *       still beaconing as hidden but we know the real name.</li>
+     *   <li>The literal {@code "(hidden)"} placeholder when neither
+     *       source has a name.</li>
+     * </ol>
+     * The intermediate "(hidden: name)" form is intentional - it tells
+     * the user the resolved name came from packet capture, not from
+     * the regular OS scan, so they understand why a "hidden" AP now
+     * has a label.
+     */
+    private String displaySsidFor(WifiAccessPoint ap) {
+        if (!ap.ssid().isEmpty()) return ap.ssid();
+        return beaconStore.discoveredSsid(ap.bssid())
+                .map(name -> "(hidden: " + name + ")")
+                .orElse("(hidden)");
+    }
+
     private static long parseBssid(String bssid) {
         if (bssid == null) return -1L;
         String[] parts = bssid.split(":");
@@ -551,7 +588,7 @@ public final class ApMarkerCanvas extends Canvas {
         for (Marker m : hit.members) {
             for (WifiAccessPoint vap : m.vaps) {
                 if (shown >= TOOLTIP_MAX_LINES) break outer;
-                String displaySsid = vap.ssid().isEmpty() ? "(hidden)" : vap.ssid();
+                String displaySsid = displaySsidFor(vap);
                 String row = String.format("%-3d dBm  %s  %s",
                         vap.rssiDbm(),
                         padOrTruncate(displaySsid, 22),

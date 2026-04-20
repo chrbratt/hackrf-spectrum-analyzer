@@ -77,6 +77,16 @@ public final class MainWindow {
      * one open RFMON capture per adapter at a time.
      */
     private final jspectrumanalyzer.wifi.capture.MonitorModeCapture monitorCapture;
+    /**
+     * App-scope {@link jspectrumanalyzer.wifi.capture.BeaconStore} that
+     * the monitor-capture panel populates and the AP marker overlay
+     * reads from. Held here (not pulled from the Wi-Fi window) so the
+     * marker overlay can substitute discovered SSIDs even when the
+     * Wi-Fi window is closed - the user might run a capture, close the
+     * window, and still expect the markers on the main spectrum chart
+     * to render the resolved names.
+     */
+    private final jspectrumanalyzer.wifi.capture.BeaconStore beaconStore;
 
     private final SpectrumChart spectrumChart;
     private final WaterfallCanvas waterfall;
@@ -117,7 +127,8 @@ public final class MainWindow {
                       jspectrumanalyzer.wifi.ChannelInterferenceService interferenceService,
                       jspectrumanalyzer.wifi.DensityHistogramService densityService,
                       jspectrumanalyzer.wifi.InterfererClassifier interfererClassifier,
-                      jspectrumanalyzer.wifi.capture.MonitorModeCapture monitorCapture) {
+                      jspectrumanalyzer.wifi.capture.MonitorModeCapture monitorCapture,
+                      jspectrumanalyzer.wifi.capture.BeaconStore beaconStore) {
         this.settings = settings;
         this.engine = engine;
         this.sdrController = sdrController;
@@ -127,11 +138,12 @@ public final class MainWindow {
         this.densityService = densityService;
         this.interfererClassifier = interfererClassifier;
         this.monitorCapture = monitorCapture;
+        this.beaconStore = beaconStore;
         this.spectrumChart = new SpectrumChart(settings);
         this.waterfall = new WaterfallCanvas();
         this.persistent = new PersistentDisplayController(settings, spectrumChart);
         this.allocationOverlay = new AllocationOverlayCanvas(settings);
-        this.apMarkerOverlay = new ApMarkerCanvas(settings);
+        this.apMarkerOverlay = new ApMarkerCanvas(settings, beaconStore);
         this.dragOverlay = new Canvas();
         this.dragOverlay.setMouseTransparent(true);
 
@@ -144,6 +156,14 @@ public final class MainWindow {
         // window after a reload paints markers immediately instead of waiting
         // for the next scan tick.
         apMarkerOverlay.setAccessPoints(wifiScanService.getLatest());
+
+        // When the beacon store learns a new SSID (probe response that
+        // resolved a hidden BSSID, or a fresh BSS Load advertisement),
+        // poke the marker overlay so the new label paints without the
+        // user having to wait for the next 1 s wifi-scan tick. The
+        // store debounces internally - we get one wake per ~16 mgmt
+        // frames, not one per beacon.
+        beaconStore.addListener(() -> Platform.runLater(apMarkerOverlay::redraw));
 
         settings.registerListener(new HackRFSettings.HackRFEventAdapter() {
             @Override
@@ -445,7 +465,7 @@ public final class MainWindow {
         if (wifiWindow == null) {
             wifiWindow = new WifiWindow(settings, sdrController, wifiScanService, occupancyService,
                     interferenceService, densityService, interfererClassifier,
-                    monitorCapture);
+                    monitorCapture, beaconStore);
         }
         wifiWindow.show(owner);
     }

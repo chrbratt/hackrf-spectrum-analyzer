@@ -36,12 +36,22 @@ public final class ApTrendChart extends Canvas {
     private static final Color PLACEHOLDER_COLOR = Color.web("#666");
 
     private final WifiScanService service;
+    /**
+     * Optional probe-response-derived SSID lookup. Used to render
+     * "(hidden: name)" instead of the bare "(hidden)" placeholder for
+     * APs whose real name has been recovered via monitor-mode capture.
+     * {@code null} when no capture pipeline is wired up - we never
+     * dereference without a guard.
+     */
+    private final jspectrumanalyzer.wifi.capture.BeaconStore beaconStore;
 
     /** Currently followed AP. {@code null} = render placeholder. */
     private WifiAccessPoint selected;
 
-    public ApTrendChart(WifiScanService service) {
+    public ApTrendChart(WifiScanService service,
+                        jspectrumanalyzer.wifi.capture.BeaconStore beaconStore) {
         this.service = service;
+        this.beaconStore = beaconStore;
         widthProperty().addListener((obs, o, n) -> redraw());
         heightProperty().addListener((obs, o, n) -> redraw());
     }
@@ -90,7 +100,7 @@ public final class ApTrendChart extends Canvas {
             g.fillText("Trend: select an AP in the table to follow its RSSI",
                     padLeft, padTop - 5);
         } else {
-            String ssid = selected.ssid().isEmpty() ? "(hidden)" : selected.ssid();
+            String ssid = displaySsidFor(selected);
             g.fillText(String.format("Trend: %s  %s  ch %d",
                     ssid, selected.bssid(), selected.channel()),
                     padLeft, padTop - 5);
@@ -173,6 +183,22 @@ public final class ApTrendChart extends Canvas {
             String label = secondsAgo == 0 ? "now" : ("-" + secondsAgo + "s");
             g.fillText(label, x - 12, padTop + plotH + 12);
         }
+    }
+
+    /**
+     * Pick the best display name for the followed AP - real SSID >
+     * captured probe-response SSID > literal "(hidden)". Mirrors the
+     * resolution used by the AP table and marker overlay so the user
+     * sees one consistent name across all three views.
+     */
+    private String displaySsidFor(WifiAccessPoint ap) {
+        if (!ap.ssid().isEmpty()) return ap.ssid();
+        if (beaconStore != null) {
+            return beaconStore.discoveredSsid(ap.bssid())
+                    .map(name -> "(hidden: " + name + ")")
+                    .orElse("(hidden)");
+        }
+        return "(hidden)";
     }
 
     private static double clampDbm(double v) {

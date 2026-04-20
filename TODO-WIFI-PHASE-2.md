@@ -19,9 +19,18 @@ Everything below is the "MAC-layer / packet" half.
 
 ## Packet capture & MAC-layer
 
-- [ ] Integrate libpcap / Npcap (monitor-mode build)
-- [ ] Live capture of 802.11 management / control / data frames
-- [ ] Hidden-SSID discovery via probe-response capture
+- [x] Integrate libpcap / Npcap (monitor-mode build) - pcap4j wired
+      via `Pcap4jMonitorCapture`, factory falls back to a no-op when
+      Npcap is missing so the rest of the UI never has to null-check.
+- [x] Live capture of 802.11 management / control / data frames -
+      `RadiotapDecoder` + `CaptureStats` count beacons / probe-req /
+      probe-resp / deauth and per-BSSID RSSI for the strongest 64
+      BSSIDs.
+- [x] Hidden-SSID discovery via probe-response capture -
+      `BeaconParser` + `BeaconStore` resolve the BSSID -> real SSID
+      map from beacons and probe responses; `ApMarkerCanvas`,
+      WifiWindow AP table and `ApTrendChart` substitute the resolved
+      name as `(hidden: name)` instead of the bare placeholder.
 - [ ] Export sessions to pcapng for offline forensics
 
 ## Airtime & utilization
@@ -30,8 +39,10 @@ Everything below is the "MAC-layer / packet" half.
 - [ ] Per-client airtime - "slow talker" detection
 - [ ] Retransmission rate per BSSID / per client
 - [ ] Frame-error / corruption stats
-- [ ] BSS Load IE parsing from beacons
-      (station count, channel utilization announced by AP)
+- [x] BSS Load IE parsing from beacons - `BssLoad.parse` extracts
+      station count + 0-100 channel-utilization from IE id 11; the
+      `MonitorCapturePanel` shows the top advertisers as
+      "BSSID  N% util  S sta".
 
 ## Client tracking & roaming
 
@@ -188,10 +199,33 @@ re-tuned without recreating the pcap session.
 
 ### Phased rollout (after this prototype is reviewed)
 
-1. **Wire pcap4j dep** behind a Gradle `monitorMode` feature flag so
-   default builds stay dependency-free.
-2. **Implement `Pcap4jMonitorCapture`** + first-launch capability dialog.
-3. **Beacon decoder** -> hidden-SSID discovery (probe-response capture).
-4. **BSS Load IE parser** -> per-AP utilization without sweep mismatch.
+1. ~~Wire pcap4j dep behind a Gradle `monitorMode` feature flag so
+   default builds stay dependency-free.~~ **Done** - pcap4j is an
+   `implementation` dep but loaded via reflection in
+   `Pcap4jMonitorCapture`; missing Npcap degrades to
+   `NoOpMonitorCapture` so dependency-free builds were not needed.
+2. ~~Implement `Pcap4jMonitorCapture`~~ **Done**. The first-launch
+   capability dialog was downsized to an inline explanatory label
+   inside `MonitorCapturePanel` (no modal, no first-paint blocking) -
+   simpler for users than yet another popup and serves the same
+   purpose.
+3. ~~Beacon decoder -> hidden-SSID discovery (probe-response
+   capture).~~ **Done**. See `wifi.capture.ieee80211.BeaconParser`
+   and `wifi.capture.BeaconStore`. The store is app-scope so resolved
+   names survive Wi-Fi-window close/reopen cycles. Display chain:
+   `ApMarkerCanvas`, the AP table in `WifiWindow`, and `ApTrendChart`
+   all render `"(hidden: name)"` once the store has heard a real
+   SSID for that BSSID.
+4. ~~BSS Load IE parser -> per-AP utilization without sweep
+   mismatch.~~ **Done**. `BssLoad.parse` extracts the IE-id-11 5-byte
+   body. `MonitorCapturePanel` ranks advertisers by self-reported
+   channel utilization and shows the top four.
 5. **Per-BSSID airtime tally** -> "slow talker" detection.
-6. **Channel-hop scheduler** -> multi-channel discovery on a single NIC.
+   _Next up._ Track per-BSSID frame counts over a rolling window in
+   the same `BeaconStore`-style service; weight by frame length when
+   we add radiotap "data rate" parsing.
+6. **Channel-hop scheduler** -> multi-channel discovery on a single
+   NIC. Requires a Windows-specific tuning path
+   (`netsh wlan` / WlanHelper) since libpcap on Windows cannot
+   re-tune the radio. Defer until step 5 lands so we have a real
+   user of the multi-channel discovery story.

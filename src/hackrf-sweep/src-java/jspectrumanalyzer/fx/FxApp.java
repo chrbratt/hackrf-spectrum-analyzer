@@ -13,6 +13,7 @@ import jspectrumanalyzer.wifi.DensityHistogramService;
 import jspectrumanalyzer.wifi.InterfererClassifier;
 import jspectrumanalyzer.wifi.WifiScanService;
 import jspectrumanalyzer.wifi.WifiScannerFactory;
+import jspectrumanalyzer.wifi.capture.BeaconStore;
 import jspectrumanalyzer.wifi.capture.MonitorCaptureFactory;
 import jspectrumanalyzer.wifi.capture.MonitorModeCapture;
 
@@ -53,6 +54,14 @@ public final class FxApp extends Application {
      * shutdown even if the Wi-Fi window never opened.
      */
     private MonitorModeCapture monitorCapture;
+    /**
+     * Phase-2 per-BSSID beacon-derived facts (discovered hidden SSIDs
+     * and the latest BSS Load IE). Lives at app scope so observations
+     * survive a Wi-Fi window close/reopen cycle - the user does not
+     * lose the SSID a probe response resolved an hour ago just
+     * because they hid the window.
+     */
+    private BeaconStore beaconStore;
     /**
      * Periodic console health probe. Reports heap, GC, FX-thread
      * latency, sweep fps, processing-queue depth and dropped-sample
@@ -108,13 +117,18 @@ public final class FxApp extends Application {
         // factory falls back to a no-op when Npcap isn't installed so
         // the rest of the UI never has to null-check.
         monitorCapture = MonitorCaptureFactory.create();
+        // Per-BSSID beacon facts. Populated by the monitor-capture
+        // panel when a capture is running; read on demand by the AP
+        // marker / table renderers to substitute discovered SSIDs in
+        // place of the "(hidden)" placeholder.
+        beaconStore = new BeaconStore();
     }
 
     @Override
     public void start(Stage primaryStage) {
         MainWindow window = new MainWindow(settings, engine, sdrController, wifiScanService,
                 occupancyService, interferenceService, densityService,
-                interfererClassifier, monitorCapture);
+                interfererClassifier, monitorCapture, beaconStore);
         window.show(primaryStage);
         engine.start();
         wifiScanService.start();
