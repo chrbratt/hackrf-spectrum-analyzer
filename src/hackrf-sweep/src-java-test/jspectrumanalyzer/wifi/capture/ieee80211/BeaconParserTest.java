@@ -121,6 +121,46 @@ class BeaconParserTest {
     }
 
     @Test
+    @DisplayName("SSID with invalid UTF-8 bytes falls back to Latin-1 (no U+FFFD wall)")
+    void invalidUtf8SsidFallsBackToLatin1() {
+        // Bytes 0xC3 0x28 are an illegal UTF-8 sequence (0xC3 starts a
+        // 2-byte sequence but 0x28 is not a valid continuation). A naive
+        // new String(body, UTF_8) replaces both with U+FFFD and the user
+        // sees "??" / "��" in the table; the Latin-1 fallback gives us
+        // "A(" instead, which preserves both the byte count and lets the
+        // user distinguish two different broken SSIDs from each other.
+        byte[] frame = beacon(
+                bssid("11:22:33:44:55:66"),
+                ie(InformationElement.ID_SSID, new byte[] {
+                        (byte) 0xC3, 0x28, (byte) 0xA1, (byte) 0xC0
+                })
+        );
+        BeaconBody body = BeaconParser.parse(frame);
+        assertTrue(body.ssid().isPresent());
+        String ssid = body.ssid().get();
+        assertEquals(4, ssid.length(), "Latin-1 fallback must preserve byte count");
+        // U+FFFD never appears: the whole point of the fallback.
+        for (int i = 0; i < ssid.length(); i++) {
+            assertFalse(ssid.charAt(i) == '\uFFFD',
+                    "Latin-1 fallback must not introduce U+FFFD; got: " + ssid);
+        }
+    }
+
+    @Test
+    @DisplayName("SSID with valid UTF-8 multibyte chars decodes normally")
+    void validUtf8SsidDecodesAsUtf8() {
+        // "Café" in UTF-8: C-a-f-0xC3 0xA9. Strict decoder must succeed.
+        byte[] frame = beacon(
+                bssid("11:22:33:44:55:66"),
+                ie(InformationElement.ID_SSID, new byte[] {
+                        'C', 'a', 'f', (byte) 0xC3, (byte) 0xA9
+                })
+        );
+        BeaconBody body = BeaconParser.parse(frame);
+        assertEquals("Caf\u00e9", body.ssid().orElse(null));
+    }
+
+    @Test
     @DisplayName("Frame too short to be a management frame is rejected")
     void rejectsShortFrame() {
         assertFalse(BeaconParser.isBeaconOrProbeResp(new byte[] { 0x00 }));

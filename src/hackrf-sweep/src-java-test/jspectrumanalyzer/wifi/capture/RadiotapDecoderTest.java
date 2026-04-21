@@ -59,6 +59,36 @@ class RadiotapDecoderTest {
     }
 
     @Test
+    void channelMhzExtractedFromChannelField() {
+        // Header layout: version+pad+len+present, then CHANNEL (4 bytes:
+        // u16 freq + u16 flags), then ANT_SIGNAL (1 byte). CHANNEL needs
+        // 2-byte alignment - present mask 0x28 = bit 3 (CHANNEL) + bit 5
+        // (ANT_SIGNAL) so we exercise the channel-skip path too.
+        int presentMask = (1 << 3) | (1 << 5);
+        int rtLen = 13; // 8 header + 4 channel + 1 ant_signal
+        byte[] out = new byte[rtLen + 24];
+        ByteBuffer bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+        bb.put((byte) 0);
+        bb.put((byte) 0);
+        bb.putShort((short) rtLen);
+        bb.putInt(presentMask);
+        bb.putShort((short) 5590);          // CHANNEL freq MHz (UNII-2C ch 118)
+        bb.putShort((short) 0x0140);        // CHANNEL flags (5 GHz + OFDM)
+        bb.put((byte) -55);                 // ANT_SIGNAL
+        out[rtLen] = (byte) 0x80;           // beacon FC
+        RadiotapDecoder.Decoded d = RadiotapDecoder.decode(out);
+        assertEquals(5590, d.channelMhz());
+        assertEquals(-55, d.rssiDbm());
+    }
+
+    @Test
+    void channelMhzZeroWhenChannelBitOff() {
+        // Reuse the rate-only fixture, which omits the CHANNEL bit.
+        RadiotapDecoder.Decoded d = RadiotapDecoder.decode(buildFrame(12, -50));
+        assertEquals(0, d.channelMhz());
+    }
+
+    @Test
     void rateZeroWhenPresentBitOff() {
         // Build a header with ONLY ANT_SIGNAL, no RATE bit set, so the
         // walker must not advance into the rate slot and must report 0.

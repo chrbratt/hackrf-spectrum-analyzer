@@ -78,23 +78,25 @@ public final class BssLoadTable {
     }
 
     private void configureColumns() {
+        // Trimmed for ~720 px content width; sum below is 480 so the
+        // CONSTRAINED policy gives the leftover (~240 px) back to SSID.
         TableColumn<Row, String> ssidCol = new TableColumn<>("SSID");
         ssidCol.setCellValueFactory(d -> new SimpleStringProperty(
                 d.getValue().ssid().isEmpty() ? "(unknown)" : d.getValue().ssid()));
-        ssidCol.setPrefWidth(150);
+        ssidCol.setPrefWidth(130);
 
         TableColumn<Row, String> bssidCol = new TableColumn<>("BSSID");
         bssidCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().bssid()));
-        bssidCol.setPrefWidth(140);
+        bssidCol.setPrefWidth(130);
 
         TableColumn<Row, Row> utilCol = new TableColumn<>("Channel utilization");
         utilCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         utilCol.setCellFactory(c -> new UtilGaugeCell());
-        utilCol.setPrefWidth(220);
+        utilCol.setPrefWidth(160);
 
         TableColumn<Row, Integer> staCol = new TableColumn<>("Stations");
         staCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue().load().stationCount()));
-        staCol.setPrefWidth(80);
+        staCol.setPrefWidth(60);
 
         table.getColumns().setAll(java.util.List.of(ssidCol, bssidCol, utilCol, staCol));
     }
@@ -119,13 +121,13 @@ public final class BssLoadTable {
             bar.setMinWidth(0);
             HBox barWrap = new HBox(bar);
             barWrap.setAlignment(Pos.CENTER_LEFT);
-            barWrap.setMinWidth(140);
-            barWrap.setPrefWidth(140);
-            barWrap.setMaxWidth(140);
+            barWrap.setMinWidth(95);
+            barWrap.setPrefWidth(95);
+            barWrap.setMaxWidth(95);
             barWrap.setStyle("-fx-background-color: #1f1f24; -fx-background-radius: 3;");
             text.getStyleClass().add("preset-caption");
-            text.setMinWidth(50);
-            box = new HBox(6, barWrap, text);
+            text.setMinWidth(40);
+            box = new HBox(4, barWrap, text);
             box.setAlignment(Pos.CENTER_LEFT);
         }
 
@@ -133,7 +135,7 @@ public final class BssLoadTable {
             super.updateItem(r, empty);
             if (empty || r == null) { setGraphic(null); setText(null); return; }
             int pct = Math.max(0, Math.min(100, r.load().channelUtilizationPercent()));
-            bar.setPrefWidth(Math.max(2, 140 * pct / 100.0));
+            bar.setPrefWidth(Math.max(2, 95 * pct / 100.0));
             bar.setStyle(String.format(
                     "-fx-background-color: %s; -fx-background-radius: 2;",
                     colorFor(pct)));

@@ -96,24 +96,28 @@ public final class TopTalkersTable {
     // ---------------------------------------------------------------- columns
 
     private void configureColumns() {
+        // Column widths trimmed so the table fits at ~720 px content
+        // width (the Wi-Fi window opens at 780 px scene width minus
+        // padding/scrollbar). Sum below is 600; the
+        // CONSTRAINED_RESIZE_POLICY distributes the rest.
         TableColumn<Row, String> ssidCol = new TableColumn<>("SSID");
         ssidCol.setCellValueFactory(d -> new SimpleStringProperty(
                 d.getValue().ssid().isEmpty() ? "(unknown)" : d.getValue().ssid()));
-        ssidCol.setPrefWidth(150);
+        ssidCol.setPrefWidth(130);
 
         TableColumn<Row, String> bssidCol = new TableColumn<>("BSSID");
         bssidCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().bssid()));
-        bssidCol.setPrefWidth(140);
+        bssidCol.setPrefWidth(130);
 
         TableColumn<Row, Row> rssiCol = new TableColumn<>("RSSI");
         rssiCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         rssiCol.setCellFactory(c -> new RssiBarCell());
-        rssiCol.setPrefWidth(130);
+        rssiCol.setPrefWidth(100);
 
         TableColumn<Row, Row> frameCol = new TableColumn<>("Frames");
         frameCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         frameCol.setCellFactory(c -> new FrameShareCell());
-        frameCol.setPrefWidth(180);
+        frameCol.setPrefWidth(140);
 
         // Retry % deserves a coloured cell so the eye lands on the bad
         // APs without having to read every number; the colour mirrors
@@ -121,7 +125,7 @@ public final class TopTalkersTable {
         TableColumn<Row, Row> retryCol = new TableColumn<>("Retry %");
         retryCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         retryCol.setCellFactory(c -> new RetryPercentCell());
-        retryCol.setPrefWidth(80);
+        retryCol.setPrefWidth(60);
 
         // Avg PHY rate is plain numeric. 0 == "no rate samples" because
         // HT/VHT/HE rates do not appear in the legacy radiotap RATE
@@ -129,7 +133,7 @@ public final class TopTalkersTable {
         TableColumn<Row, String> rateCol = new TableColumn<>("Avg rate");
         rateCol.setCellValueFactory(d -> new SimpleStringProperty(
                 formatAvgRate(d.getValue().avgRateMbps())));
-        rateCol.setPrefWidth(80);
+        rateCol.setPrefWidth(70);
 
         table.getColumns().setAll(java.util.List.of(
                 ssidCol, bssidCol, rssiCol, frameCol, retryCol, rateCol));
@@ -180,12 +184,12 @@ public final class TopTalkersTable {
             bar.setMinWidth(0);
             HBox barWrap = new HBox(bar);
             barWrap.setAlignment(Pos.CENTER_LEFT);
-            barWrap.setMinWidth(60);
-            barWrap.setPrefWidth(60);
-            barWrap.setMaxWidth(60);
+            barWrap.setMinWidth(40);
+            barWrap.setPrefWidth(40);
+            barWrap.setMaxWidth(40);
             text.getStyleClass().add("preset-caption");
-            text.setMinWidth(50);
-            box = new HBox(6, barWrap, text);
+            text.setMinWidth(45);
+            box = new HBox(4, barWrap, text);
             box.setAlignment(Pos.CENTER_LEFT);
         }
 
@@ -197,7 +201,7 @@ public final class TopTalkersTable {
                 return;
             }
             double f = r.rssiFraction();
-            bar.setPrefWidth(Math.max(2, 60 * f));
+            bar.setPrefWidth(Math.max(2, 40 * f));
             // Red (weak) -> yellow -> green (strong). HSL hue 0..120.
             double hue = 120.0 * f;
             bar.setStyle(String.format(
@@ -242,12 +246,12 @@ public final class TopTalkersTable {
             bar.setStyle("-fx-background-color: #2f9aa6; -fx-background-radius: 2;");
             HBox barWrap = new HBox(bar);
             barWrap.setAlignment(Pos.CENTER_LEFT);
-            barWrap.setMinWidth(90);
-            barWrap.setPrefWidth(90);
-            barWrap.setMaxWidth(90);
+            barWrap.setMinWidth(50);
+            barWrap.setPrefWidth(50);
+            barWrap.setMaxWidth(50);
             text.getStyleClass().add("preset-caption");
-            text.setMinWidth(80);
-            box = new HBox(6, barWrap, text);
+            text.setMinWidth(70);
+            box = new HBox(4, barWrap, text);
             box.setAlignment(Pos.CENTER_LEFT);
         }
 
@@ -255,7 +259,7 @@ public final class TopTalkersTable {
             super.updateItem(r, empty);
             if (empty || r == null) { setGraphic(null); setText(null); return; }
             double f = r.frameFraction();
-            bar.setPrefWidth(Math.max(2, 90 * f));
+            bar.setPrefWidth(Math.max(2, 50 * f));
             text.setText(String.format("%,d  (%d%%)", r.frames(), r.mgmtSharePercent()));
             setText(null);
             setGraphic(box);

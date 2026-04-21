@@ -61,6 +61,12 @@ public final class Pcap4jMonitorCapture implements MonitorModeCapture {
     private PcapHandle handle;
     private Thread pollThread;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /**
+     * Cached tune-attempt status from the last {@link #start} call.
+     * Read by {@link #lastTuneStatus} so the UI can show whether the
+     * channel was honoured. Reset on each start.
+     */
+    private volatile String lastTuneStatus = "";
 
     /**
      * Cheap probe: try to enumerate adapters. Catches the
@@ -133,15 +139,23 @@ public final class Pcap4jMonitorCapture implements MonitorModeCapture {
                     + "NDIS native 802.11 monitor capability. (" + ex.getMessage() + ")",
                     ex);
         }
-        // Channel selection is not exposed by libpcap on Windows - the
-        // OS controls that via the connection profile. The user has to
-        // pre-tune via "netsh wlan disconnect" + WlanHelper or rely on
-        // whatever channel the adapter is parked on. We log the request
-        // so the UI can show "captured on whatever-the-adapter-was-on"
-        // explicitly. Phase 2 channel-hop scheduler will tackle this
-        // properly once we have a Windows-specific tuning path.
-        LOG.info("Capture started on {} (requested channel {} MHz - tuning is OS-managed)",
-                adapter.description(), channelMhz);
+        // libpcap on Windows enables monitor mode but does not switch
+        // the centre frequency, so the radio stays parked on whatever
+        // channel the OS last associated on. Use Npcap's WlanHelper
+        // (now that we hold the handle and the adapter is provably
+        // in monitor mode) to actually retune. Tune failures are
+        // non-fatal: we still get frames, they just come from the
+        // wrong channel - the UI surfaces lastTuneStatus() so the
+        // user knows whether their request was honoured.
+        WlanHelper.TuneResult tune = WlanHelper.setFrequencyMhz(adapter.id(), channelMhz);
+        lastTuneStatus = tune.message();
+        if (tune.success()) {
+            LOG.info("Capture started on {} ({} MHz, tune ok: {})",
+                    adapter.description(), channelMhz, tune.message());
+        } else {
+            LOG.warn("Capture started on {} ({} MHz requested) but tune failed: {}",
+                    adapter.description(), channelMhz, tune.message());
+        }
 
         running.set(true);
         pollThread = new Thread(() -> pollLoop(onFrame, channelMhz),
@@ -172,7 +186,7 @@ public final class Pcap4jMonitorCapture implements MonitorModeCapture {
                 }
                 long nowNs = System.nanoTime();
                 onFrame.accept(new RadiotapFrame(nowNs, channelMhz,
-                        d.rssiDbm(), d.rateMbps(), mac));
+                        d.channelMhz(), d.rssiDbm(), d.rateMbps(), mac));
             } catch (org.pcap4j.core.NotOpenException ex) {
                 // Handle was closed under us by stop() - exit cleanly.
                 break;
@@ -208,5 +222,10 @@ public final class Pcap4jMonitorCapture implements MonitorModeCapture {
             }
             handle = null;
         }
+    }
+
+    @Override
+    public String lastTuneStatus() {
+        return lastTuneStatus;
     }
 }

@@ -61,6 +61,21 @@ public interface MonitorModeCapture extends AutoCloseable {
      */
     void stop();
 
+    /**
+     * Human-readable result of the most recent channel-tune attempt
+     * performed during {@link #start}. Empty string when the backend
+     * does not tune (NoOp), when {@link #start} has not been called
+     * yet, or when the capture started but no tuning was attempted.
+     *
+     * <p>The Windows pcap4j backend uses Npcap's {@code WlanHelper.exe}
+     * to actually switch the radio's centre frequency after libpcap
+     * puts the adapter into monitor mode; this method exposes the
+     * helper's stdout/stderr so the UI can show the user whether the
+     * channel was honoured ("tuned to 5590 MHz") or rejected
+     * ("WlanHelper.exe not found", "exit 1: invalid frequency").
+     */
+    default String lastTuneStatus() { return ""; }
+
     /** Convenience for try-with-resources callers. Equivalent to {@link #stop}. */
     @Override
     default void close() {

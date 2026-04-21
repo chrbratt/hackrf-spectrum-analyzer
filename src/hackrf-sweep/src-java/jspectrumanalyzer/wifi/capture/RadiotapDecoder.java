@@ -33,9 +33,17 @@ public final class RadiotapDecoder {
      * nearest Mbps). 0 means the radiotap header omitted the rate field
      * (some adapters do that for HT/VHT/HE frames where MCS lives in a
      * separate optional field). Treat 0 as "unknown", not "0 Mbps".
+     *
+     * <p>{@code channelMhz} is the centre frequency the radio reported it
+     * was tuned to when it captured the frame, taken from the radiotap
+     * CHANNEL field. 0 means the field was absent (some drivers omit it
+     * for HT/VHT/HE frames in favour of the optional XCHANNEL field that
+     * we do not parse). Lets the UI show "Observed channel" so the user
+     * can verify the WlanHelper tune actually took effect.
      */
     public record Decoded(int radiotapLen, int rssiDbm, int rateMbps,
-                          int frameType, int frameSubtype, String bssid) {}
+                          int frameType, int frameSubtype, int channelMhz,
+                          String bssid) {}
 
     /** Frame Control "Type" values, per IEEE 802.11. */
     public static final int TYPE_MGMT = 0;
@@ -71,25 +79,25 @@ public final class RadiotapDecoder {
      */
     public static Decoded decode(byte[] data) {
         if (data == null || data.length < 8) {
-            return new Decoded(0, 0, 0, -1, -1, null);
+            return new Decoded(0, 0, 0, -1, -1, 0, null);
         }
         int version = data[0] & 0xff;
         if (version != 0) {
             // Future revision; fall back to skipping the length field only.
             int len = readU16Le(data, 2);
-            return new Decoded(len, 0, 0, -1, -1, null);
+            return new Decoded(len, 0, 0, -1, -1, 0, null);
         }
         int rtLen = readU16Le(data, 2);
         if (rtLen < 8 || rtLen > data.length) {
-            return new Decoded(0, 0, 0, -1, -1, null);
+            return new Decoded(0, 0, 0, -1, -1, 0, null);
         }
         int presentFlags = readU32Le(data, 4);
-        // RSSI and rate share the same prefix walk; do it once.
+        // RSSI, rate and channel all share the same prefix walk; do it once.
         Fields f = extractFields(data, presentFlags, rtLen);
 
         int frameStart = rtLen;
         if (frameStart + 2 > data.length) {
-            return new Decoded(rtLen, f.rssi, f.rateMbps, -1, -1, null);
+            return new Decoded(rtLen, f.rssi, f.rateMbps, -1, -1, f.channelMhz, null);
         }
         int fc0 = data[frameStart] & 0xff;
         int type = (fc0 >> 2) & 0x03;
@@ -100,11 +108,11 @@ public final class RadiotapDecoder {
         if (frameStart + 10 <= data.length) {
             bssid = formatMac(data, frameStart + 4);
         }
-        return new Decoded(rtLen, f.rssi, f.rateMbps, type, subtype, bssid);
+        return new Decoded(rtLen, f.rssi, f.rateMbps, type, subtype, f.channelMhz, bssid);
     }
 
-    /** RSSI in dBm and rate in Mbps extracted from one radiotap walk. */
-    private record Fields(int rssi, int rateMbps) {}
+    /** RSSI in dBm, rate in Mbps and channel MHz extracted from one radiotap walk. */
+    private record Fields(int rssi, int rateMbps, int channelMhz) {}
 
     /**
      * Walk the radiotap presence-field layout once and pluck both the
@@ -125,7 +133,7 @@ public final class RadiotapDecoder {
         int cursor = 8;
         int flags = presentFlags;
         while ((flags & (1 << 31)) != 0) {
-            if (cursor + 4 > rtLen) return new Fields(0, 0);
+            if (cursor + 4 > rtLen) return new Fields(0, 0, 0);
             flags = readU32Le(data, cursor);
             cursor += 4;
         }
@@ -139,14 +147,22 @@ public final class RadiotapDecoder {
             }
             cursor += 1;
         }
-        if ((presentFlags & RT_FLAG_CHANNEL) != 0) cursor = align(cursor, 2) + 4;
+        int channelMhz = 0;
+        if ((presentFlags & RT_FLAG_CHANNEL) != 0) {
+            // Channel field: u16 frequency MHz + u16 flags, 2-byte aligned.
+            // The frequency is the only field the UI uses today; flags
+            // (CCK/OFDM/2GHz/5GHz/passive) duplicate info we already have.
+            cursor = align(cursor, 2);
+            if (cursor + 2 <= rtLen) channelMhz = readU16Le(data, cursor);
+            cursor += 4;
+        }
         if ((presentFlags & RT_FLAG_FHSS) != 0)    cursor += 2;
         int rssi = 0;
         if ((presentFlags & RT_FLAG_ANT_SIGNAL) != 0) {
             // Antenna signal is a signed 8-bit dBm; align is 1 (no padding).
             if (cursor < rtLen) rssi = data[cursor]; // already signed - radiotap dBm is int8
         }
-        return new Fields(rssi, rateMbps);
+        return new Fields(rssi, rateMbps, channelMhz);
     }
 
     private static int align(int offset, int alignment) {

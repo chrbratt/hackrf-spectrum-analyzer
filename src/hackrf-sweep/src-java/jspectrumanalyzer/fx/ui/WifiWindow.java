@@ -680,40 +680,44 @@ public final class WifiWindow {
     }
 
     private void configureApTable() {
+        // Column widths trimmed so the table fits at ~720 px content
+        // width without horizontal scroll. Sum below is 600; the
+        // CONSTRAINED policy hands the leftover to SSID since that's
+        // the column users care about reading in full.
         TableColumn<WifiAccessPoint, String> ssidCol = new TableColumn<>("SSID");
         ssidCol.setCellValueFactory(d -> new SimpleStringProperty(displaySsidFor(d.getValue())));
-        ssidCol.setPrefWidth(160);
+        ssidCol.setPrefWidth(140);
 
         TableColumn<WifiAccessPoint, String> bssidCol = new TableColumn<>("BSSID");
         bssidCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().bssid()));
-        bssidCol.setPrefWidth(140);
+        bssidCol.setPrefWidth(130);
 
         TableColumn<WifiAccessPoint, Integer> rssiCol = new TableColumn<>("RSSI dBm");
         rssiCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue().rssiDbm()));
-        rssiCol.setPrefWidth(80);
+        rssiCol.setPrefWidth(65);
         rssiCol.setComparator(Comparator.naturalOrder());
 
         TableColumn<WifiAccessPoint, Integer> chCol = new TableColumn<>("Ch");
         chCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue().channel()));
-        chCol.setPrefWidth(50);
+        chCol.setPrefWidth(40);
 
         TableColumn<WifiAccessPoint, String> bandCol = new TableColumn<>("Band");
         bandCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().bandLabel()));
-        bandCol.setPrefWidth(70);
+        bandCol.setPrefWidth(55);
 
         TableColumn<WifiAccessPoint, Integer> freqCol = new TableColumn<>("MHz");
         freqCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue().centerFrequencyMhz()));
-        freqCol.setPrefWidth(70);
+        freqCol.setPrefWidth(55);
 
         TableColumn<WifiAccessPoint, String> widthCol = new TableColumn<>("Width");
         widthCol.setCellValueFactory(d -> new SimpleStringProperty(
                 d.getValue().bandwidthMhz() + " MHz"));
-        widthCol.setPrefWidth(70);
+        widthCol.setPrefWidth(60);
 
         TableColumn<WifiAccessPoint, String> phyCol = new TableColumn<>("PHY");
         phyCol.setCellValueFactory(d -> new SimpleStringProperty(
                 d.getValue().phyType() == null ? "" : d.getValue().phyType()));
-        phyCol.setPrefWidth(80);
+        phyCol.setPrefWidth(55);
 
         apTable.getColumns().setAll(java.util.List.of(
                 ssidCol, bssidCol, rssiCol, chCol, bandCol, freqCol, widthCol, phyCol));

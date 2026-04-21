@@ -19,6 +19,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import jspectrumanalyzer.fx.util.FxControls;
+import jspectrumanalyzer.wifi.RfChannelLookup;
 import jspectrumanalyzer.wifi.capture.BeaconStore;
 import jspectrumanalyzer.wifi.capture.CaptureStats;
 import jspectrumanalyzer.wifi.capture.MonitorAdapter;
@@ -66,6 +67,18 @@ public final class MonitorCapturePanel {
     private final Spinner<Integer> channelSpinner = new Spinner<>();
     private final Button startStopButton = new Button("Start capture");
     private final Label statusLabel = new Label();
+    /**
+     * Result of the most recent WlanHelper tune attempt - shown next to
+     * the status label so the user can immediately see whether the
+     * adapter accepted the requested channel. Empty until first start.
+     */
+    private String tuneStatus = "";
+    /**
+     * Channel the user requested at last Start - cached so {@link #refreshAll}
+     * can render the requested-vs-observed comparison without consulting
+     * the spinner (the user might have changed it mid-capture).
+     */
+    private int requestedChannelMhz = 0;
 
     /** Live insight card and visual widgets - see their own javadoc. */
     private final CaptureInsightCard insightCard;
@@ -122,9 +135,11 @@ public final class MonitorCapturePanel {
 
         Label hint = new Label(
                 "Captures raw 802.11 frames from the selected adapter. "
-                + "Channel selection is OS-managed on Windows: pre-tune the "
-                + "adapter via 'netsh wlan' or rely on whatever it is "
-                + "currently parked on. Counters reset on each Start.");
+                + "Channel is set via Npcap's WlanHelper.exe after monitor "
+                + "mode is engaged - the status line below shows whether "
+                + "the tune was accepted and the channel the radio is "
+                + "actually on (some drivers ignore tune requests for "
+                + "specific bands). Counters reset on each Start.");
         hint.setWrapText(true);
         hint.getStyleClass().add("preset-caption");
 
@@ -231,19 +246,19 @@ public final class MonitorCapturePanel {
     }
 
     private void buildChannelSpinner() {
-        // Wi-Fi 1 .. Wi-Fi 6E covers 2.412 - 7.125 GHz. The spinner is
-        // informational only on Windows (libpcap can't tune the radio),
-        // so we just clamp to the regulatory band edges to stop the
-        // value from drifting into nonsense.
+        // Wi-Fi 1 .. Wi-Fi 6E covers 2.412 - 7.125 GHz. We pass the
+        // value to WlanHelper.exe at start; the status line surfaces
+        // whether the driver accepted it. Clamped to regulatory edges
+        // so the spinner cannot drift into nonsense.
         channelSpinner.setValueFactory(
                 new SpinnerValueFactory.IntegerSpinnerValueFactory(2400, 7125, 2412, 1));
         channelSpinner.setEditable(true);
         channelSpinner.setPrefWidth(110);
         FxControls.withTooltip(channelSpinner,
-                "Reference channel for the capture session. On Windows "
-                + "libpcap does not switch the radio; this value is "
-                + "stamped into RadiotapFrame.channelMhz so downstream "
-                + "consumers know which channel the capture matches.");
+                "Centre frequency in MHz to tune to at Start. Sent to "
+                + "Npcap's WlanHelper.exe; some drivers reject specific "
+                + "bands (e.g. 6 GHz on older NICs) - the status line "
+                + "shows the actual channel the radio ends up on.");
     }
 
     private void buildStartStopButton() {
@@ -285,10 +300,44 @@ public final class MonitorCapturePanel {
             return;
         }
         running = true;
+        requestedChannelMhz = channelMhz;
+        // Read the tune status right after start - Pcap4jMonitorCapture
+        // populates it inside start() before returning, so by now we have
+        // the WlanHelper outcome ready to display.
+        tuneStatus = capture.lastTuneStatus();
         startStopButton.setText("Stop capture");
-        statusLabel.setText(String.format(
-                "Capturing on %s (channel %d MHz)...", adapter.description(), channelMhz));
+        statusLabel.setText(buildStatusText(adapter.description(), channelMhz, /*observed*/ 0));
         if (refreshTimer != null) refreshTimer.play();
+    }
+
+    /**
+     * Build the status label text. Combines the static "Capturing on
+     * <adapter> (requested <X> MHz)" with two live signals: the
+     * WlanHelper tune outcome (so a "WlanHelper.exe not found" failure
+     * is impossible to miss) and, once we've seen our first frame, the
+     * channel the radiotap header says we're actually on. When the two
+     * disagree the user knows the OS is overriding our tune.
+     */
+    private String buildStatusText(String adapterDesc, int requestedMhz, int observedMhz) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Capturing on ").append(adapterDesc)
+                .append(" - requested ").append(requestedMhz).append(" MHz");
+        RfChannelLookup.labelFor(requestedMhz)
+                .ifPresent(l -> sb.append(" (").append(l).append(')'));
+        sb.append('.');
+        if (tuneStatus != null && !tuneStatus.isBlank()) {
+            sb.append(" Tune: ").append(tuneStatus).append('.');
+        }
+        if (observedMhz > 0) {
+            sb.append(" Observed: ").append(observedMhz).append(" MHz");
+            RfChannelLookup.labelFor(observedMhz)
+                    .ifPresent(l -> sb.append(" (").append(l).append(')'));
+            if (observedMhz != requestedMhz) {
+                sb.append(" - radio is on a different channel than requested!");
+            }
+            sb.append('.');
+        }
+        return sb.toString();
     }
 
     private void stopCapture() {
@@ -315,6 +364,16 @@ public final class MonitorCapturePanel {
         apHealthTable.update(snap);
         bssLoadTable.update();
         refreshHiddenList();
+        // Re-render the status line each tick so the observed channel
+        // appears as soon as the first frame with a CHANNEL field
+        // arrives (some drivers need a second or two of capture before
+        // the field starts populating).
+        if (running && adapterCombo.getValue() != null) {
+            statusLabel.setText(buildStatusText(
+                    adapterCombo.getValue().description(),
+                    requestedChannelMhz,
+                    snap.observedChannelMhz()));
+        }
     }
 
     /**

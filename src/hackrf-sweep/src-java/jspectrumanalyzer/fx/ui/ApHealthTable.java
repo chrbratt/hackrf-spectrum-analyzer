@@ -97,32 +97,36 @@ public final class ApHealthTable {
             String ssid = r.ssid().isEmpty() ? "(unknown)" : r.ssid();
             return new SimpleStringProperty(ssid + "\n" + r.stat().bssid());
         });
-        ssidCol.setPrefWidth(170);
+        // Trimmed to fit at ~720 px content width: SSID gets the
+        // largest share since it carries two lines (SSID + BSSID),
+        // status badges sit right of all metrics so they're easy to
+        // scan top-down.
+        ssidCol.setPrefWidth(150);
 
         TableColumn<Row, Row> retryCol = new TableColumn<>("Retry %");
         retryCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         retryCol.setCellFactory(c -> new RetryCell());
-        retryCol.setPrefWidth(80);
+        retryCol.setPrefWidth(60);
 
         TableColumn<Row, Row> bcnHzCol = new TableColumn<>("Beacons/s");
         bcnHzCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         bcnHzCol.setCellFactory(c -> new BeaconHzCell());
-        bcnHzCol.setPrefWidth(95);
+        bcnHzCol.setPrefWidth(75);
 
         TableColumn<Row, Row> jitterCol = new TableColumn<>("Jitter");
         jitterCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         jitterCol.setCellFactory(c -> new JitterCell());
-        jitterCol.setPrefWidth(80);
+        jitterCol.setPrefWidth(65);
 
         TableColumn<Row, String> rateCol = new TableColumn<>("PHY rate");
         rateCol.setCellValueFactory(d -> new SimpleStringProperty(
                 formatRate(d.getValue().stat())));
-        rateCol.setPrefWidth(110);
+        rateCol.setPrefWidth(85);
 
         TableColumn<Row, Row> statusCol = new TableColumn<>("Status");
         statusCol.setCellValueFactory(d -> new SimpleObjectProperty<>(d.getValue()));
         statusCol.setCellFactory(c -> new StatusCell());
-        statusCol.setPrefWidth(95);
+        statusCol.setPrefWidth(75);
 
         table.getColumns().setAll(java.util.List.of(
                 ssidCol, retryCol, bcnHzCol, jitterCol, rateCol, statusCol));

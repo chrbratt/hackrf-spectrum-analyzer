@@ -83,6 +83,7 @@ public final class CaptureStats {
                            long beacons, long probeReq, long probeResp,
                            long deauth, long bytes,
                            long firstFrameNs, long lastFrameNs,
+                           int observedChannelMhz,
                            Map<String, BssidStat> byBssid) {
 
         /** Capture duration in nanoseconds; 0 before any frame is seen. */
@@ -110,6 +111,14 @@ public final class CaptureStats {
     private long bytes;
     private long firstFrameNs;
     private long lastFrameNs;
+    /**
+     * Most recent non-zero channel reported by the radiotap CHANNEL
+     * field. Lets the UI show the frequency the radio actually sat on
+     * vs. the one the user requested, so a failed WlanHelper tune is
+     * obvious at a glance. 0 until the first frame with the field is
+     * captured (some USB drivers omit the CHANNEL field entirely).
+     */
+    private int lastObservedChannelMhz;
 
     /**
      * Per-BSSID rolling counters. Bounded by {@link #MAX_BSSIDS} so a
@@ -201,6 +210,7 @@ public final class CaptureStats {
         beacons = probeReq = probeResp = deauth = 0;
         bytes = 0;
         firstFrameNs = lastFrameNs = 0;
+        lastObservedChannelMhz = 0;
         byBssid.clear();
     }
 
@@ -221,6 +231,7 @@ public final class CaptureStats {
         bytes += mac.length;
         if (firstFrameNs == 0) firstFrameNs = f.timestampNs();
         lastFrameNs = f.timestampNs();
+        if (f.observedChannelMhz() > 0) lastObservedChannelMhz = f.observedChannelMhz();
         if (mac.length < 2) return;
         int fc0 = mac[0] & 0xff;
         int fc1 = mac[1] & 0xff;
@@ -292,6 +303,7 @@ public final class CaptureStats {
         return new Snapshot(total, mgmt, ctrl, data, ext,
                 beacons, probeReq, probeResp, deauth, bytes,
                 firstFrameNs, lastFrameNs,
+                lastObservedChannelMhz,
                 Map.copyOf(copy));
     }
 

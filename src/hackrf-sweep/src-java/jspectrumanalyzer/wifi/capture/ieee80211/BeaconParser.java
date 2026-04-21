@@ -1,5 +1,8 @@
 package jspectrumanalyzer.wifi.capture.ieee80211;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
@@ -115,11 +118,22 @@ public final class BeaconParser {
 
     /**
      * Decode an SSID IE body. The spec says the body is "0..32 octets
-     * of UTF-8" (technically not always UTF-8 in the wild, but every
-     * sane consumer treats it as such). An all-zero body of any length
-     * is the alternate hidden-network encoding some vendors use; we
-     * fold that into the empty string so the resolver can treat all
-     * "hidden" advertisements identically.
+     * of UTF-8" but a non-trivial slice of consumer APs ship SSIDs in
+     * legacy code pages (Latin-1, GBK, vendor binary) so the naive
+     * {@code new String(body, UTF_8)} replaces every offending byte
+     * with U+FFFD and the user sees a wall of {@code �} characters.
+     *
+     * <p>Strategy: try strict UTF-8 first (still correct for the
+     * 99% case); on {@link CharacterCodingException} fall back to
+     * ISO-8859-1, which is byte-identity for 0x00..0xFF and never
+     * throws. The result is at least readable and preserves the
+     * SSID's distinctive byte pattern - even if the glyphs aren't
+     * exactly what the AP intended, the user can still tell two
+     * different "broken" SSIDs apart in the table.
+     *
+     * <p>An all-zero body of any length is the alternate hidden-network
+     * encoding some vendors use; we fold that into the empty string so
+     * the resolver can treat all "hidden" advertisements identically.
      */
     private static String decodeSsid(byte[] body) {
         if (body == null || body.length == 0) return "";
@@ -128,7 +142,15 @@ public final class BeaconParser {
             if (b != 0) { allZero = false; break; }
         }
         if (allZero) return "";
-        return new String(body, StandardCharsets.UTF_8);
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(body))
+                    .toString();
+        } catch (CharacterCodingException ex) {
+            return new String(body, StandardCharsets.ISO_8859_1);
+        }
     }
 
     private static String formatMac(byte[] data, int offset) {
