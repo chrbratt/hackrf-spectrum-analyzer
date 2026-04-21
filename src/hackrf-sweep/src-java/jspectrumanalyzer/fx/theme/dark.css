@@ -299,6 +299,31 @@
     -fx-padding: 8 4 4 4;
 }
 
+/* Per-AP health status badge - small pill on the right of every row in
+   ApHealthTable. Uses the same green / amber / red ramp as the inline
+   retry / jitter / beacon-Hz cells so the eye learns one mapping that
+   applies across the whole monitor-mode panel. */
+.health-badge {
+    -fx-background-radius: 10;
+    -fx-padding: 2 9 2 9;
+    -fx-text-fill: #0d1117;
+    -fx-font-weight: bold;
+    -fx-font-size: 11px;
+}
+
+.health-good {
+    -fx-background-color: #3fb27f;
+}
+
+.health-stressed {
+    -fx-background-color: #d6a23a;
+}
+
+.health-bad {
+    -fx-background-color: #d05a5a;
+    -fx-text-fill: #fff5f5;
+}
+
 .palette-readout {
     -fx-text-fill: #aaa;
     -fx-font-family: "JetBrains Mono", "Consolas", monospace;

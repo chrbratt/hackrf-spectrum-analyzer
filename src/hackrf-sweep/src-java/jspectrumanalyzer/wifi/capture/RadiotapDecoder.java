@@ -24,9 +24,18 @@ import java.nio.ByteOrder;
  */
 public final class RadiotapDecoder {
 
-    /** Result of decoding one captured frame. Fields are zero / null when unknown. */
-    public record Decoded(int radiotapLen, int rssiDbm, int frameType,
-                          int frameSubtype, String bssid) {}
+    /**
+     * Result of decoding one captured frame. Fields are zero / null when
+     * unknown.
+     *
+     * <p>{@code rateMbps} is the PHY data rate the radio reported for this
+     * frame in whole Mbps (radiotap stores 500 kbps units; we round to the
+     * nearest Mbps). 0 means the radiotap header omitted the rate field
+     * (some adapters do that for HT/VHT/HE frames where MCS lives in a
+     * separate optional field). Treat 0 as "unknown", not "0 Mbps".
+     */
+    public record Decoded(int radiotapLen, int rssiDbm, int rateMbps,
+                          int frameType, int frameSubtype, String bssid) {}
 
     /** Frame Control "Type" values, per IEEE 802.11. */
     public static final int TYPE_MGMT = 0;
@@ -62,24 +71,25 @@ public final class RadiotapDecoder {
      */
     public static Decoded decode(byte[] data) {
         if (data == null || data.length < 8) {
-            return new Decoded(0, 0, -1, -1, null);
+            return new Decoded(0, 0, 0, -1, -1, null);
         }
         int version = data[0] & 0xff;
         if (version != 0) {
             // Future revision; fall back to skipping the length field only.
             int len = readU16Le(data, 2);
-            return new Decoded(len, 0, -1, -1, null);
+            return new Decoded(len, 0, 0, -1, -1, null);
         }
         int rtLen = readU16Le(data, 2);
         if (rtLen < 8 || rtLen > data.length) {
-            return new Decoded(0, 0, -1, -1, null);
+            return new Decoded(0, 0, 0, -1, -1, null);
         }
         int presentFlags = readU32Le(data, 4);
-        int rssi = extractRssi(data, presentFlags, rtLen);
+        // RSSI and rate share the same prefix walk; do it once.
+        Fields f = extractFields(data, presentFlags, rtLen);
 
         int frameStart = rtLen;
         if (frameStart + 2 > data.length) {
-            return new Decoded(rtLen, rssi, -1, -1, null);
+            return new Decoded(rtLen, f.rssi, f.rateMbps, -1, -1, null);
         }
         int fc0 = data[frameStart] & 0xff;
         int type = (fc0 >> 2) & 0x03;
@@ -90,34 +100,53 @@ public final class RadiotapDecoder {
         if (frameStart + 10 <= data.length) {
             bssid = formatMac(data, frameStart + 4);
         }
-        return new Decoded(rtLen, rssi, type, subtype, bssid);
+        return new Decoded(rtLen, f.rssi, f.rateMbps, type, subtype, bssid);
     }
 
+    /** RSSI in dBm and rate in Mbps extracted from one radiotap walk. */
+    private record Fields(int rssi, int rateMbps) {}
+
     /**
-     * Walk the radiotap field layout up to the antenna-signal byte. We
-     * only support the v0 "extended presence" with no extension words,
-     * which covers every Npcap / libpcap capture today. Returns 0 when
-     * the antenna-signal flag is not set.
+     * Walk the radiotap presence-field layout once and pluck both the
+     * antenna-signal (RSSI) and the data rate. Caller-side this matters
+     * because the rate field sits before RSSI in the layout, so a
+     * separate "extractRate" pass would re-walk the same bytes.
+     *
+     * <p>The radiotap rate field is a u8 in 500 kbps units; we round it
+     * to the nearest whole Mbps. HT/VHT/HE rates do <em>not</em> live in
+     * this field (they would be in MCS / VHT / HE_MU optional fields,
+     * which we do not currently parse), so for modern PHYs the rate
+     * cell will surface as 0 = "unknown". That is honest about the
+     * limitation rather than silently making numbers up.
      */
-    private static int extractRssi(byte[] data, int presentFlags, int rtLen) {
-        if ((presentFlags & RT_FLAG_ANT_SIGNAL) == 0) return 0;
+    private static Fields extractFields(byte[] data, int presentFlags, int rtLen) {
         // First field starts at byte 8 (after version+pad+len+presentFlags).
         // Extension flags double the present field; skip if bit 31 is set.
         int cursor = 8;
         int flags = presentFlags;
         while ((flags & (1 << 31)) != 0) {
-            if (cursor + 4 > rtLen) return 0;
+            if (cursor + 4 > rtLen) return new Fields(0, 0);
             flags = readU32Le(data, cursor);
             cursor += 4;
         }
-        if ((presentFlags & RT_FLAG_TSFT) != 0)    cursor = align(cursor, 8) + 8;
-        if ((presentFlags & RT_FLAG_FLAGS) != 0)   cursor += 1;
-        if ((presentFlags & RT_FLAG_RATE) != 0)    cursor += 1;
+        if ((presentFlags & RT_FLAG_TSFT) != 0)  cursor = align(cursor, 8) + 8;
+        if ((presentFlags & RT_FLAG_FLAGS) != 0) cursor += 1;
+        int rateMbps = 0;
+        if ((presentFlags & RT_FLAG_RATE) != 0) {
+            if (cursor < rtLen) {
+                int raw = data[cursor] & 0xff;       // u8, units of 500 kbps
+                rateMbps = (raw + 1) / 2;            // round to nearest Mbps
+            }
+            cursor += 1;
+        }
         if ((presentFlags & RT_FLAG_CHANNEL) != 0) cursor = align(cursor, 2) + 4;
         if ((presentFlags & RT_FLAG_FHSS) != 0)    cursor += 2;
-        // Antenna signal is a signed 8-bit dBm; align is 1 (no padding).
-        if (cursor >= rtLen) return 0;
-        return data[cursor]; // already signed - radiotap dBm is int8
+        int rssi = 0;
+        if ((presentFlags & RT_FLAG_ANT_SIGNAL) != 0) {
+            // Antenna signal is a signed 8-bit dBm; align is 1 (no padding).
+            if (cursor < rtLen) rssi = data[cursor]; // already signed - radiotap dBm is int8
+        }
+        return new Fields(rssi, rateMbps);
     }
 
     private static int align(int offset, int alignment) {

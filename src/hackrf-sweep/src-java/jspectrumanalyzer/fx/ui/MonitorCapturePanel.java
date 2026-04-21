@@ -1,6 +1,7 @@
 package jspectrumanalyzer.fx.ui;
 
 import java.util.List;
+import java.util.Map;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -12,6 +13,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.Spinner;
 import javafx.scene.control.SpinnerValueFactory;
+import javafx.scene.control.TitledPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
@@ -22,28 +24,24 @@ import jspectrumanalyzer.wifi.capture.CaptureStats;
 import jspectrumanalyzer.wifi.capture.MonitorAdapter;
 import jspectrumanalyzer.wifi.capture.MonitorModeCapture;
 import jspectrumanalyzer.wifi.capture.MonitorModeException;
-import jspectrumanalyzer.wifi.capture.ieee80211.BssLoad;
 
 /**
- * Experimental Phase-2 UI: live counters for an Npcap monitor-mode
- * capture session.
- *
- * <p>Sits at the bottom of the {@link WifiWindow} so it's clearly
- * separated from the read-only Wi-Fi survey above. When the configured
- * {@link MonitorModeCapture} backend reports {@code isAvailable=false}
- * the whole section degrades to a single explanatory label - the user
- * never sees a non-functional Start button.
+ * Phase-2 monitor-mode capture UI. Restructured around live "insight"
+ * widgets rather than a wall of counter labels: an insight card up top
+ * (plain English summary), a frame-type breakdown bar, top-talkers
+ * table with inline RSSI/share bars, and a BSS Load gauge table.
  *
  * <h2>Lifecycle</h2>
  * <ul>
  *   <li>Capture handle is owned by the panel; created on Start, closed on
  *       Stop, and force-stopped from {@link #shutdown()} when the parent
  *       window goes away.</li>
- *   <li>UI refresh runs at 4 Hz via a JavaFX {@link Timeline} - cheap
- *       enough to not steal cycles from the capture poller, but fast
- *       enough that the counter looks responsive.</li>
- *   <li>{@link CaptureStats#snapshot()} synchronises around the polling
+ *   <li>UI refresh runs at 4 Hz via a JavaFX {@link Timeline}.
+ *       {@link CaptureStats#snapshot()} synchronises with the polling
  *       thread's writes, so we read it without further coordination.</li>
+ *   <li>Backend availability is checked once at construction; an
+ *       unavailable backend collapses the panel to a single explanatory
+ *       label so there is nothing to misclick.</li>
  * </ul>
  *
  * <h2>Why not pcap4j's PacketListener API?</h2>
@@ -60,34 +58,22 @@ public final class MonitorCapturePanel {
 
     private final MonitorModeCapture capture;
     private final CaptureStats stats = new CaptureStats();
-    /**
-     * Shared beacon-derived facts. The capture polling thread feeds
-     * raw frames into this store; the rest of the UI (AP table, marker
-     * overlay, trend chart) reads from it via
-     * {@link BeaconStore#discoveredSsid(String)}. App-scope ownership
-     * means the resolved SSIDs survive a Wi-Fi window close/reopen.
-     */
     private final BeaconStore beaconStore;
 
-    private final VBox root = new VBox(8);
+    private final VBox root = new VBox(10);
 
     private final ComboBox<MonitorAdapter> adapterCombo = new ComboBox<>();
     private final Spinner<Integer> channelSpinner = new Spinner<>();
     private final Button startStopButton = new Button("Start capture");
     private final Label statusLabel = new Label();
-    private final Label totalLabel = new Label();
-    private final Label typeBreakdownLabel = new Label();
-    private final Label mgmtBreakdownLabel = new Label();
-    private final Label rssiLabel = new Label();
-    /**
-     * Phase-2 hidden-SSID-resolution and BSS-Load summary. Populated
-     * from {@link BeaconStore} every UI tick. Kept as separate labels
-     * (not a single combined string) so the resolved SSIDs and the
-     * load percentages can be styled differently if we ever add CSS
-     * for them.
-     */
-    private final Label discoveredLabel = new Label();
-    private final Label bssLoadLabel = new Label();
+
+    /** Live insight card and visual widgets - see their own javadoc. */
+    private final CaptureInsightCard insightCard;
+    private final FrameTypeBar frameTypeBar;
+    private final TopTalkersTable topTalkersTable;
+    private final ApHealthTable apHealthTable;
+    private final BssLoadTable bssLoadTable;
+    private final Label hiddenList = new Label();
 
     private final Timeline refreshTimer;
     private boolean running = false;
@@ -95,6 +81,11 @@ public final class MonitorCapturePanel {
     public MonitorCapturePanel(MonitorModeCapture capture, BeaconStore beaconStore) {
         this.capture = capture;
         this.beaconStore = beaconStore;
+        this.insightCard = new CaptureInsightCard(beaconStore);
+        this.frameTypeBar = new FrameTypeBar();
+        this.topTalkersTable = new TopTalkersTable(beaconStore);
+        this.apHealthTable = new ApHealthTable(beaconStore);
+        this.bssLoadTable = new BssLoadTable(beaconStore);
 
         if (!capture.isAvailable()) {
             // Backend not ready (no Npcap, or NoOp implementation).
@@ -115,7 +106,9 @@ public final class MonitorCapturePanel {
         buildAdapterCombo();
         buildChannelSpinner();
         buildStartStopButton();
-        buildLabels();
+        statusLabel.getStyleClass().add("preset-caption");
+        hiddenList.getStyleClass().add("preset-caption");
+        hiddenList.setWrapText(true);
 
         // Build the row inline (rather than via FxControls.labeled which
         // returns a vertical caption-on-top VBox) so the adapter combo and
@@ -129,36 +122,75 @@ public final class MonitorCapturePanel {
 
         Label hint = new Label(
                 "Captures raw 802.11 frames from the selected adapter. "
-                + "Channel selection is OS-managed on Windows: pre-tune "
-                + "the adapter via 'netsh wlan' or rely on whatever it "
-                + "is currently parked on. Counters reset on each Start.");
+                + "Channel selection is OS-managed on Windows: pre-tune the "
+                + "adapter via 'netsh wlan' or rely on whatever it is "
+                + "currently parked on. Counters reset on each Start.");
         hint.setWrapText(true);
         hint.getStyleClass().add("preset-caption");
+
+        // Frame-type bar: full-width strip with a short caption above
+        // so first-time users know what the colours represent.
+        VBox frameSection = new VBox(4,
+                captionLabel("Frame composition (mgmt / ctrl / data / ext)"),
+                frameTypeBar);
+        frameTypeBar.setHeight(28);
+
+        // Top talkers and BSS Load are heavyweight enough (each can
+        // grow to MAX_ROWS rows) that we put each behind a TitledPane
+        // so a user who only cares about one can collapse the other.
+        TitledPane talkersPane = FxControls.collapsible(
+                "Top talkers (by management frame count)", true,
+                FxControls.sectionWithHowTo(
+                        "",
+                        "Sorted by frames captured. RSSI bar = signal strength relative to -90..-30 dBm; "
+                        + "Frames bar = each row's frame count relative to the loudest talker. "
+                        + "Retry % is bold green/amber/red so trouble jumps out without sorting; "
+                        + "Avg rate shows '-' on modern HT/VHT/HE PHYs that omit the legacy radiotap rate field.",
+                        topTalkersTable.view()));
+        // Per-AP health is the "is the AP doing OK on its channel" view -
+        // sorted by status (Bad first) to put trouble at the top.
+        TitledPane healthPane = FxControls.collapsible(
+                "Per-AP channel health", true,
+                FxControls.sectionWithHowTo(
+                        "",
+                        "Composite health from beacon rate, beacon jitter, retry % and PHY rate. "
+                        + "Beacon rate target is ~9.77/s (default 100 TU interval); jitter under 10 ms "
+                        + "means clean CCA. Status badge: green = healthy, amber = stressed (one metric "
+                        + "crossed its first threshold), red = bad (retry >= 25%, beacons < 5/s, or jitter > 30 ms).",
+                        apHealthTable.view()));
+        TitledPane bssLoadPane = FxControls.collapsible(
+                "BSS Load advertised by APs", true,
+                FxControls.sectionWithHowTo(
+                        "",
+                        "Self-reported channel utilization from Information Element 11. "
+                        + "Bar colour: green < 40% (healthy), amber 40-70% (consider load balancing), "
+                        + "red >= 70% (saturated).",
+                        bssLoadTable.view()));
+        TitledPane hiddenPane = FxControls.collapsible(
+                "Resolved hidden SSIDs", false, hiddenList);
 
         root.setPadding(new Insets(0));
         root.getChildren().addAll(
                 hint,
                 controlsRow,
                 statusLabel,
-                totalLabel,
-                typeBreakdownLabel,
-                mgmtBreakdownLabel,
-                rssiLabel,
-                discoveredLabel,
-                bssLoadLabel);
+                insightCard,
+                frameSection,
+                talkersPane,
+                healthPane,
+                bssLoadPane,
+                hiddenPane);
 
         refreshTimer = new Timeline(new KeyFrame(
-                Duration.millis(UI_REFRESH_MS), e -> refreshLabels()));
+                Duration.millis(UI_REFRESH_MS), e -> refreshAll()));
         refreshTimer.setCycleCount(Timeline.INDEFINITE);
 
         statusLabel.setText("Ready. Pick an adapter and click Start.");
-        refreshLabels();
+        refreshAll();
     }
 
     /** Root node so callers can drop the panel into a {@link VBox} section. */
-    public javafx.scene.Node node() {
-        return root;
-    }
+    public javafx.scene.Node node() { return root; }
 
     /** Stop any running capture and release the OS handle. Idempotent. */
     public void shutdown() {
@@ -216,23 +248,16 @@ public final class MonitorCapturePanel {
 
     private void buildStartStopButton() {
         startStopButton.setOnAction(e -> {
-            if (running) {
-                stopCapture();
-            } else {
-                startCapture();
-            }
+            if (running) stopCapture(); else startCapture();
         });
         startStopButton.setDisable(adapterCombo.getItems().isEmpty());
     }
 
-    private void buildLabels() {
-        statusLabel.getStyleClass().add("preset-caption");
-        totalLabel.getStyleClass().add("preset-caption");
-        typeBreakdownLabel.getStyleClass().add("preset-caption");
-        mgmtBreakdownLabel.getStyleClass().add("preset-caption");
-        rssiLabel.getStyleClass().add("preset-caption");
-        discoveredLabel.getStyleClass().add("preset-caption");
-        bssLoadLabel.getStyleClass().add("preset-caption");
+    private static Label captionLabel(String text) {
+        Label l = new Label(text);
+        l.setWrapText(true);
+        l.getStyleClass().add("preset-caption");
+        return l;
     }
 
     // ---------------------------------------------------------------- Lifecycle
@@ -277,85 +302,41 @@ public final class MonitorCapturePanel {
         if (refreshTimer != null) refreshTimer.stop();
         // Final tick so the user sees the last counter values without
         // having to wait for the next timer cycle that we just cancelled.
-        Platform.runLater(this::refreshLabels);
+        Platform.runLater(this::refreshAll);
         statusLabel.setText("Capture stopped.");
     }
 
-    private void refreshLabels() {
+    /** Pull a fresh snapshot once and broadcast it to every visual widget. */
+    private void refreshAll() {
         CaptureStats.Snapshot snap = stats.snapshot();
-        totalLabel.setText(String.format(
-                "Frames: %,d total", snap.total()));
-        typeBreakdownLabel.setText(String.format(
-                "Type: mgmt=%,d  ctrl=%,d  data=%,d  ext=%,d",
-                snap.mgmt(), snap.ctrl(), snap.data(), snap.ext()));
-        mgmtBreakdownLabel.setText(String.format(
-                "Mgmt subtypes: beacon=%,d  probe-req=%,d  probe-resp=%,d  deauth=%,d",
-                snap.beacons(), snap.probeReq(), snap.probeResp(), snap.deauth()));
-        if (snap.rssiByBssid().isEmpty()) {
-            rssiLabel.setText("Per-BSSID RSSI: (no management frames yet)");
-        } else {
-            // Show up to the 5 strongest BSSIDs we've seen so the label
-            // stays one line. Sorting in the UI thread is fine here -
-            // the map is bounded by CaptureStats.MAX_BSSIDS = 64.
-            String top = snap.rssiByBssid().entrySet().stream()
-                    .sorted((a, b) -> Long.compare(b.getValue(), a.getValue()))
-                    .limit(5)
-                    .map(e -> e.getKey() + " " + e.getValue() + " dBm")
-                    .reduce((a, b) -> a + "  |  " + b)
-                    .orElse("");
-            rssiLabel.setText("Top BSSIDs: " + top);
-        }
-        refreshBeaconLabels();
+        insightCard.update(snap, running);
+        frameTypeBar.setSnapshot(snap);
+        topTalkersTable.update(snap);
+        apHealthTable.update(snap);
+        bssLoadTable.update();
+        refreshHiddenList();
     }
 
     /**
-     * Render the two beacon-store-derived rows: discovered hidden SSIDs
-     * (as a compact "BSSID -> name" list, capped at 4) and the top BSS
-     * Load advertisements (as "BSSID  N% util  S sta", capped at 4).
-     * Both labels are intentionally short - they sit below the existing
-     * counter rows and the panel must stay readable at the default
-     * window width.
+     * Render the resolved-hidden-SSID details. The insight card already
+     * surfaces the count, so this is the place users look when they
+     * want to see *which* names were learned.
      */
-    private void refreshBeaconLabels() {
-        var discovered = beaconStore.discoveredSsidSnapshot();
+    private void refreshHiddenList() {
+        Map<String, String> discovered = beaconStore.discoveredSsidSnapshot();
         if (discovered.isEmpty()) {
-            discoveredLabel.setText("Hidden SSIDs resolved: 0 (capture probe-responses to discover them)");
-        } else {
-            // Sort by BSSID purely for stable rendering; the order has
-            // no semantic meaning since the store only holds last-seen
-            // names.
-            String list = discovered.entrySet().stream()
-                    .sorted(java.util.Map.Entry.comparingByKey())
-                    .limit(4)
-                    .map(e -> e.getKey() + " -> " + e.getValue())
-                    .reduce((a, b) -> a + "  |  " + b)
-                    .orElse("");
-            int extra = discovered.size() - Math.min(4, discovered.size());
-            String suffix = extra > 0 ? "  (+" + extra + " more)" : "";
-            discoveredLabel.setText("Hidden SSIDs resolved: " + discovered.size()
-                    + " - " + list + suffix);
+            hiddenList.setText("No hidden SSIDs resolved this session yet. "
+                    + "Capture probe responses (auto-broadcast every few seconds by most APs) "
+                    + "to fill this list.");
+            return;
         }
-
-        var loads = beaconStore.bssLoadSnapshot();
-        if (loads.isEmpty()) {
-            bssLoadLabel.setText("BSS Load: (no AP advertised this IE in any captured beacon)");
-        } else {
-            // Sort by self-reported channel utilization descending so
-            // the busiest AP shows first - that is the one the user
-            // actually wants to know about for channel planning.
-            String top = loads.entrySet().stream()
-                    .sorted((a, b) -> Integer.compare(
-                            b.getValue().channelUtilizationPercent(),
-                            a.getValue().channelUtilizationPercent()))
-                    .limit(4)
-                    .map(e -> {
-                        BssLoad l = e.getValue();
-                        return String.format("%s  %d%% util  %d sta",
-                                e.getKey(), l.channelUtilizationPercent(), l.stationCount());
-                    })
-                    .reduce((a, b) -> a + "  |  " + b)
-                    .orElse("");
-            bssLoadLabel.setText("BSS Load top: " + top);
-        }
+        StringBuilder sb = new StringBuilder();
+        discovered.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEachOrdered(e -> sb.append(e.getKey())
+                        .append("  ->  ")
+                        .append(e.getValue())
+                        .append('\n'));
+        hiddenList.setText(sb.toString().trim());
     }
 }

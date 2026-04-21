@@ -171,7 +171,8 @@ public final class Pcap4jMonitorCapture implements MonitorModeCapture {
                     System.arraycopy(raw, rtLen, mac, 0, mac.length);
                 }
                 long nowNs = System.nanoTime();
-                onFrame.accept(new RadiotapFrame(nowNs, channelMhz, d.rssiDbm(), 0, mac));
+                onFrame.accept(new RadiotapFrame(nowNs, channelMhz,
+                        d.rssiDbm(), d.rateMbps(), mac));
             } catch (org.pcap4j.core.NotOpenException ex) {
                 // Handle was closed under us by stop() - exit cleanly.
                 break;
