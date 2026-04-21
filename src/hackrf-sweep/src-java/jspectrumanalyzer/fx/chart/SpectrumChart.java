@@ -23,6 +23,7 @@ import org.jfree.chart.plot.PlotOrientation;
 import org.jfree.chart.plot.XYPlot;
 import org.jfree.chart.renderer.xy.XYAreaRenderer;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
+import org.jfree.chart.ui.RectangleEdge;
 import org.jfree.data.xy.XYSeriesCollection;
 
 import jspectrumanalyzer.core.DatasetSpectrumPeak;
@@ -266,6 +267,27 @@ public final class SpectrumChart {
 
     public JFreeChart getChart() {
         return chart;
+    }
+
+    /**
+     * Map an X coordinate (in chart-canvas pixels) to its RF frequency in
+     * MHz. Returns {@link Double#NaN} when the cursor is outside the plot
+     * area or before the first paint has measured the data rectangle.
+     *
+     * <p>The chart's domain axis stores logical MHz plus the configured
+     * frequency shift (see {@link StitchedNumberAxis}); we strip the shift,
+     * convert logical &rarr; RF via the supplied {@link FrequencyPlan} and
+     * re-apply the shift so the returned value matches what the axis tick
+     * labels show.
+     */
+    public double pixelXToRfMhz(double pxX, FrequencyPlan plan, int freqShift) {
+        Rectangle2D area = getDataArea();
+        if (area == null || area.getWidth() < 1) return Double.NaN;
+        if (pxX < area.getX() || pxX > area.getX() + area.getWidth()) return Double.NaN;
+        double logicalPlusShift = chart.getXYPlot().getDomainAxis()
+                .java2DToValue(pxX, area, RectangleEdge.BOTTOM);
+        double logical = logicalPlusShift - freqShift;
+        return plan.logicalMHzToRfMHz(logical) + freqShift;
     }
 
     public Rectangle2D getDataArea() {

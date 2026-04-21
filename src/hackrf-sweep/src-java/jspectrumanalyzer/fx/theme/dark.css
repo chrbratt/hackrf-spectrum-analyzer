@@ -194,6 +194,11 @@
     -fx-font-weight: bold;
 }
 
+.status-bar .status-cursor {
+    -fx-text-fill: #d0d0d8;
+    -fx-font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
 .status-separator,
 .toolbar-separator {
     -fx-background-color: #3a3a3a;

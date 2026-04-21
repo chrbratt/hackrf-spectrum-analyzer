@@ -97,6 +97,7 @@ public final class MainWindow {
 
     private final Label hardwareStatus = new Label("Stopped");
     private final Label peakLabel = new Label("");
+    private final Label cursorLabel = new Label("");
     private final Label totalPowerLabel = new Label("");
 
     private volatile long lastChartUpdate = 0;
@@ -300,13 +301,27 @@ public final class MainWindow {
         chartLayer.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_MOVED, ev -> {
             javafx.geometry.Point2D p = apMarkerOverlay.sceneToLocal(ev.getSceneX(), ev.getSceneY());
             apMarkerOverlay.setHoveredPoint(p.getX(), p.getY());
+            updateCursorLabel(p.getX());
         });
         chartLayer.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_DRAGGED, ev -> {
             javafx.geometry.Point2D p = apMarkerOverlay.sceneToLocal(ev.getSceneX(), ev.getSceneY());
             apMarkerOverlay.setHoveredPoint(p.getX(), p.getY());
+            updateCursorLabel(p.getX());
         });
-        chartLayer.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_EXITED, ev ->
-                apMarkerOverlay.setHoveredPoint(null, null));
+        chartLayer.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_EXITED, ev -> {
+            apMarkerOverlay.setHoveredPoint(null, null);
+            cursorLabel.setText("");
+        });
+
+        // Waterfall hover: it shares the chart's X-axis (the SplitPane stacks
+        // them vertically with identical width and X origin), so the same
+        // pixel-X -> RF MHz conversion works against the chart's data area.
+        waterfallHolder.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_MOVED, ev ->
+                updateCursorLabel(ev.getX()));
+        waterfallHolder.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_DRAGGED, ev ->
+                updateCursorLabel(ev.getX()));
+        waterfallHolder.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_EXITED, ev ->
+                cursorLabel.setText(""));
 
         // Vertical SplitPane lets the user drag the divider between chart and
         // waterfall. The toolbar sits above the SplitPane in a VBox so it stays
@@ -367,17 +382,39 @@ public final class MainWindow {
      */
     private HBox buildStatusBar() {
         peakLabel.getStyleClass().add("status-peak");
+        cursorLabel.getStyleClass().add("status-cursor");
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
         HBox bar = new HBox(8,
                 hardwareStatus, separator(),
-                peakLabel,
+                peakLabel, separator(),
+                cursorLabel,
                 spacer,
                 separator(),
                 totalPowerLabel);
         bar.setAlignment(Pos.CENTER_LEFT);
         bar.getStyleClass().add("status-bar");
         return bar;
+    }
+
+    /**
+     * Format and push the live "Cursor: X MHz . [channel]" read-out to the
+     * status bar. Shared by the chart and waterfall hover handlers because
+     * both surfaces use the chart's data area for X-mapping. Clears the
+     * label when {@code pxX} falls outside the plot area.
+     */
+    private void updateCursorLabel(double pxX) {
+        double rfMhz = spectrumChart.pixelXToRfMhz(
+                pxX,
+                settings.getEffectivePlan(),
+                settings.getFreqShift().getValue());
+        if (Double.isNaN(rfMhz)) {
+            cursorLabel.setText("");
+            return;
+        }
+        String base = String.format(java.util.Locale.ROOT, "Cursor: %.3f MHz", rfMhz);
+        String channel = jspectrumanalyzer.wifi.RfChannelLookup.labelFor(rfMhz).orElse(null);
+        cursorLabel.setText(channel == null ? base : base + " \u00b7 " + channel);
     }
 
     private static Region separator() {
