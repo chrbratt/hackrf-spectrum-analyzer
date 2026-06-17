@@ -39,6 +39,7 @@ import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.ui.ChartToolbar;
 import jspectrumanalyzer.fx.ui.DisplayTab;
 import jspectrumanalyzer.fx.ui.ParamsTab;
+import jspectrumanalyzer.fx.ui.ProfilesTab;
 import jspectrumanalyzer.fx.ui.RecordingTab;
 import jspectrumanalyzer.fx.ui.ScanTab;
 import jspectrumanalyzer.fx.ui.WifiWindow;
@@ -246,7 +247,8 @@ public final class MainWindow {
                 new Tab("Scan", new ScanTab(settings, sdrController)),
                 new Tab("Params", new ParamsTab(settings)),
                 new Tab("Display", new DisplayTab(settings)),
-                new Tab("Recording", new RecordingTab(settings)));
+                new Tab("Recording", new RecordingTab(settings)),
+                new Tab("Profiles", new ProfilesTab(settings)));
 
         Pane waterfallHolder = new Pane(waterfall);
         waterfallHolder.setMinHeight(80);
@@ -477,11 +479,11 @@ public final class MainWindow {
     }
 
     /**
-     * Map {@code KeyCode.DIGIT1..DIGIT4} (and their numpad twins) to a
+     * Map {@code KeyCode.DIGIT1..DIGIT5} (and their numpad twins) to a
      * zero-based tab index. Returns {@code -1} for any other key so the
      * accelerator filter above can fall through to its default branches.
-     * Ctrl+5 used to point at the old Wi-Fi tab; Wi-Fi has its own window
-     * now reachable via the toolbar button (or Ctrl+I, see installShortcuts).
+     * Ctrl+5 now selects the Profiles tab (the old Wi-Fi tab became its own
+     * window, reachable via the toolbar button or Ctrl+I).
      */
     private static int digitIndex(KeyCode code) {
         switch (code) {
@@ -489,6 +491,7 @@ public final class MainWindow {
             case DIGIT2: case NUMPAD2: return 1;
             case DIGIT3: case NUMPAD3: return 2;
             case DIGIT4: case NUMPAD4: return 3;
+            case DIGIT5: case NUMPAD5: return 4;
             default: return -1;
         }
     }

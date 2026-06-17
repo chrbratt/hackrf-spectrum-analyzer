@@ -28,14 +28,19 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	 * Disabled by default - all other themes use the legacy binary drop.
 	 */
 	protected volatile boolean maxHoldSmoothFade = false;
-	protected long		peakFalloutMillis	= 1000;
-	protected long		peakHoldMillis;
-	protected float		peakFallThreshold;
+	// Volatile: these are live-tuned from the FX thread (Params tab) while the
+	// processing thread reads them once per sweep in refreshPeakSpectrum /
+	// refreshAverageSpectrum. Without volatile a change could sit unpublished
+	// in the writer's cache, so a new "Peak fall rate" might not take effect
+	// until some unrelated memory barrier happened to flush it.
+	protected volatile long		peakFalloutMillis	= 1000;
+	protected volatile long		peakHoldMillis;
+	protected volatile float	peakFallThreshold;
 	protected int		iteration			= 0;
 	protected float[]	sumVal;
 	protected float[][]	spectrumVal;
 	protected int		avgIterations;
-	protected int		avgOffset;
+	protected volatile int		avgOffset;
 	protected int		useMarkerHold;
 	
 	/**

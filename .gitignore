@@ -13,3 +13,4 @@ hackrf-2026.01.3/*
 
 # Keep gradle wrapper jar tracked
 !gradle/wrapper/gradle-wrapper.jar
+old_Hackrf_Spectrum/*

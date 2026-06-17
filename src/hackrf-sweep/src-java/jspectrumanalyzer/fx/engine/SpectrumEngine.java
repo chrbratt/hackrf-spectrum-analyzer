@@ -178,24 +178,44 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         startLauncherThread();
         wireSettingsObservers();
         wireRunStateObserver();
-        wireMaxHoldDecayObserver();
+        wireLiveDatasetObservers();
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "SpectrumEngine-shutdown"));
     }
 
     /**
-     * Push the user-configured max-hold lifetime straight to the dataset
-     * without restarting the sweep. The dataset's setter is volatile and
-     * the processing thread re-reads it once per sweep, so changes apply
-     * within one frame of the next paint.
+     * Push settings that only affect post-processing (not the radio tuning)
+     * straight into the live dataset, without restarting the sweep. The
+     * dataset's setters write volatile fields that the processing thread
+     * re-reads once per sweep, so changes apply within one frame of the next
+     * paint - no need to re-tune libhackrf.
+     *
+     * <p>Previously only the max-hold decay was wired this way; the peak
+     * fall-rate / threshold / hold-time and the average offset were read
+     * solely in the {@link DatasetSpectrumPeak} constructor, so editing them
+     * had no effect until something else recreated the dataset (e.g. a zoom,
+     * which retunes and therefore restarts the sweep). They now apply live.
      */
-    private void wireMaxHoldDecayObserver() {
-        Runnable apply = () -> {
-            DatasetSpectrumPeak ds = datasetSpectrum;
-            if (ds != null) {
-                ds.setMaxHoldFalloutMillis(settings.getMaxHoldDecaySeconds().getValue() * 1000L);
-            }
-        };
-        settings.getMaxHoldDecaySeconds().addListener(apply);
+    private void wireLiveDatasetObservers() {
+        settings.getMaxHoldDecaySeconds().addListener(() -> withDataset(ds ->
+                ds.setMaxHoldFalloutMillis(settings.getMaxHoldDecaySeconds().getValue() * 1000L)));
+        settings.getPeakFallRate().addListener(() -> withDataset(ds ->
+                ds.setPeakFalloutMillis(settings.getPeakFallRate().getValue() * 1000L)));
+        settings.getPeakFallTrs().addListener(() -> withDataset(ds ->
+                ds.setPeakFallThreshold(settings.getPeakFallTrs().getValue())));
+        settings.getPeakHoldTime().addListener(() -> withDataset(ds ->
+                ds.setPeakHoldMillis(settings.getPeakHoldTime().getValue() * 1000L)));
+        settings.getAvgOffset().addListener(() -> withDataset(ds ->
+                ds.setAvgOffset(settings.getAvgOffset().getValue())));
+    }
+
+    /** Run {@code action} against the current dataset if one exists. The
+     *  reference is volatile and swapped on sweep restart, so we read it once
+     *  into a local to avoid acting on a half-replaced dataset. */
+    private void withDataset(java.util.function.Consumer<DatasetSpectrumPeak> action) {
+        DatasetSpectrumPeak ds = datasetSpectrum;
+        if (ds != null) {
+            action.accept(ds);
+        }
     }
 
     public void shutdown() {
@@ -262,6 +282,12 @@ public final class SpectrumEngine implements HackRFSweepDataCallback {
         settings.getAntennaPowerEnable()  .addListener(() -> restartSweepIfRunning("antennaPower"));
         settings.getAntennaLNA()          .addListener(() -> restartSweepIfRunning("antennaLNA"));
         settings.getAvgIterations()       .addListener(() -> restartSweepIfRunning("avgIterations"));
+        // Frequency shift is baked into the dataset's immutable frequency axis
+        // at construction (DatasetSpectrum.frequencyAxisMHz), so it can't be
+        // pushed live like the peak params - rebuild the dataset by restarting
+        // the sweep, same as a real retune. Without this, changing the shift
+        // only took effect after the next zoom/retune.
+        settings.getFreqShift()           .addListener(() -> restartSweepIfRunning("freqShift"));
 
         // Picking a different physical device requires fully re-opening
         // libhackrf, which is exactly what restartSweep() does anyway.

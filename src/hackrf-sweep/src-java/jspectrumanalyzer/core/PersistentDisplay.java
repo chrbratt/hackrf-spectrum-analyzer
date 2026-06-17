@@ -76,6 +76,23 @@ public class PersistentDisplay {
 	private int							persistenceTimeSecs	= 5;
 	private float						updatesPerSecond	= 1;
 
+	/**
+	 * Fixed accumulation ceiling for a continuously-present (frequency, power)
+	 * cell. Deliberately decoupled from the persistence time: the old code tied
+	 * the ceiling to {@code updatesPerSecond * persistenceTimeSecs}, which let a
+	 * strong signal pile up so high that decaying it back to the zero threshold
+	 * took roughly 13 half-lives - so a stopped signal lingered ~20 s even with
+	 * "Persistence time" set to 5 s. A fixed ceiling keeps the dynamic range
+	 * bounded so the slider maps to the real fade-out time.
+	 */
+	private static final float			MAX_FILL			= 80f;
+	/**
+	 * Fraction of {@link #MAX_FILL} at which a cell is treated as "gone" and
+	 * cleared to the background. A saturated cell decays from {@code MAX_FILL}
+	 * to this floor in about {@code persistenceTimeSecs} seconds.
+	 */
+	private static final float			FADE_FLOOR_FRACTION	= 0.02f;
+
 	public PersistentDisplay() {
 		setImageSize(320, 240);
 	}
@@ -123,24 +140,28 @@ public class PersistentDisplay {
 		float rawImagePowerArr[] = imagePowerAccumulated.data;
 
 		/**
-		 * EMA
+		 * Phosphor-style exponential decay with an explicit time constant.
+		 * The per-frame factor is chosen so a cell sitting at {@link #MAX_FILL}
+		 * fades down to {@code MAX_FILL * FADE_FLOOR_FRACTION} (the clear-to-
+		 * background threshold) in about {@code persistenceTimeSecs} seconds,
+		 * regardless of frame rate. Cells that keep getting hit - including
+		 * low-duty-cycle bursts - are topped back up below, so recurring
+		 * signals stay lit and only signals that actually stop fade away.
 		 */
-		// EMA decay only (no current-sample term): each pixel fades by (1-k)
-		// per frame where k follows the standard EMA half-life formula.
-		float order = persistenceTimeSecs * updatesPerSecond;
-		float k = 2f / (order + 1f);
-		float kM1 = 1 - k;
-		imagePowerAccumulated.multiplyAllValues(kM1);
+		float secs = Math.max(1f, persistenceTimeSecs);
+		float fadeFrames = Math.max(1f, secs * updatesPerSecond);
+		float decay = (float) Math.pow(FADE_FLOOR_FRACTION, 1.0 / fadeFrames);
+		imagePowerAccumulated.multiplyAllValues(decay);
 
 		float[] spectrum = datasetSpectrum.getSpectrumArray();
 		int width = image.getWidth();
 		int height = image.getHeight();
 		float hDivYRange = (-height) / (yMax - yMin);
 
-		// Pipeline: the float buffer accumulates +1 per (frequency, power)
-		// hit. Once per render cycle the accumulator gets log-compressed and
-		// mapped through the palette to produce the colour image.
-		float maxAccumulatedValue = updatesPerSecond * persistenceTimeSecs;
+		// Each render cycle the accumulator gets log-compressed and mapped
+		// through the palette to produce the colour image. The +1 per hit
+		// (capped at MAX_FILL) means brighter = hit more often, so the heatmap
+		// still reads as an occupancy density, not just a recency flag.
 		for (int i = 0; i < spectrum.length; i++) {
 			float power = spectrum[i];
 			int x = i * width / spectrum.length;
@@ -148,7 +169,7 @@ public class PersistentDisplay {
 
 			if (x >= 0 && y >= 0 && x < width && y < height) {
 				int index = imagePowerAccumulated.getIndex(x, y);
-				if (imagePowerAccumulated.data[index] < maxAccumulatedValue)
+				if (imagePowerAccumulated.data[index] < MAX_FILL)
 					imagePowerAccumulated.data[index] += 1f;
 			}
 		}
@@ -161,7 +182,7 @@ public class PersistentDisplay {
 					maxValue = value;
 			}
 
-			float setToZeroThreshold = 0.01f;
+			float setToZeroThreshold = MAX_FILL * FADE_FLOOR_FRACTION;
 			float minOutToLog = 1.0f;
 			float maxOutToLog = 100;
 			float logMin = (float) Math.log10(minOutToLog);
