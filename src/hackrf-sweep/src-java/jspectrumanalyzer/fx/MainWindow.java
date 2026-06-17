@@ -204,6 +204,10 @@ public final class MainWindow {
             }
         }));
 
+        settings.getWaterfallSensitivity().addListener(() ->
+                waterfall.setWaterfallSensitivity(settings.getWaterfallSensitivity().getValue()));
+        waterfall.setWaterfallSensitivity(settings.getWaterfallSensitivity().getValue());
+
         // Apply the user's palette pick to both the live waterfall and the
         // persistent display, then keep them in sync when the user picks a
         // new theme from the Display tab. Persistent display lives behind a

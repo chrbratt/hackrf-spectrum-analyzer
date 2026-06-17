@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jspectrumanalyzer.core.FrequencyAllocationTable;
 import jspectrumanalyzer.core.FrequencyAllocations;
+import jspectrumanalyzer.core.SignalTypePresets;
 import jspectrumanalyzer.fx.chart.GraphTheme;
 import jspectrumanalyzer.fx.model.SettingsStore;
 import jspectrumanalyzer.fx.util.FxControls;
@@ -58,6 +59,14 @@ public final class DisplayTab extends ScrollPane {
                                         "How many sweeps per pushed waterfall row. "
                                         + "10 = every sweep (fast scroll, less averaging), "
                                         + "1 = every 10th sweep (slow scroll, more averaging).")),
+                        FxControls.labeled("Sensitivity (-12 = clean, +12 = weak signals)",
+                                FxControls.withTooltip(
+                                        FxControls.slider(settings.getWaterfallSensitivity(), -12, 12),
+                                        "Fine-tune the automatic contrast. The waterfall already maps "
+                                        + "colour from the measured noise floor to the peak; raise this "
+                                        + "to pull the black point down (weaker signals start to show "
+                                        + "colour) or lower it to keep the background cleaner so only "
+                                        + "stronger signals light up. 0 = pure auto-contrast.")),
                         FxControls.withTooltip(
                                 FxControls.checkBox("Funnel mode (compressed long-term history)",
                                         settings.isWaterfallFunnel()),
@@ -144,11 +153,17 @@ public final class DisplayTab extends ScrollPane {
     private ComboBox<NamedTable> buildAllocationCombo() {
         ComboBox<NamedTable> combo = new ComboBox<>();
         combo.getItems().add(NamedTable.NONE);
+        // Built-in technology presets first: they label the known channel
+        // structure for a radio type so signals are easy to attribute.
+        combo.getItems().add(new NamedTable("Wi-Fi 2.4 GHz (ch 1/6/11)", SignalTypePresets.wifi24()));
+        combo.getItems().add(new NamedTable("Bluetooth / BLE 2.4 GHz", SignalTypePresets.bluetooth24()));
         combo.getItems().addAll(loadTables());
         combo.setMaxWidth(Double.MAX_VALUE);
         FxControls.withTooltip(combo,
-                "Country / region whose allocation bands will be drawn on the chart. "
-                + "Picking a country auto-enables the overlay above. "
+                "Overlay a channel plan on the chart. The built-in Wi-Fi / Bluetooth "
+                + "presets label where each technology lives so signals are easy to "
+                + "identify; the country entries draw full regional allocation bands. "
+                + "Picking any entry auto-enables the overlay above. "
                 + "Add your own CSV under src/hackrf-sweep/freq.");
 
         FrequencyAllocationTable current = settings.getFrequencyAllocationTable().getValue();

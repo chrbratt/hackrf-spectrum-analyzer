@@ -93,6 +93,7 @@ public final class SettingsCodec {
         p.setProperty("graphTheme", s.getGraphTheme().getValue().name());
         p.setProperty("waterfallTheme", s.getWaterfallTheme().getValue().name());
         putInt(p, "waterfallSpeed", s.getWaterfallSpeed());
+        putInt(p, "waterfallSensitivity", s.getWaterfallSensitivity());
         putBool(p, "waterfallFunnel", s.isWaterfallFunnel());
         putBool(p, "waterfallVisible", s.isWaterfallVisible());
         putBool(p, "persistentDisplay", s.isPersistentDisplayVisible());
@@ -149,6 +150,7 @@ public final class SettingsCodec {
         applyEnum(p, "graphTheme", GraphTheme.class, s.getGraphTheme());
         applyEnum(p, "waterfallTheme", WaterfallPalette.class, s.getWaterfallTheme());
         applyInt(p, "waterfallSpeed", s.getWaterfallSpeed());
+        applyInt(p, "waterfallSensitivity", s.getWaterfallSensitivity());
         applyBool(p, "waterfallFunnel", s.isWaterfallFunnel());
         applyBool(p, "waterfallVisible", s.isWaterfallVisible());
         applyBool(p, "persistentDisplay", s.isPersistentDisplayVisible());

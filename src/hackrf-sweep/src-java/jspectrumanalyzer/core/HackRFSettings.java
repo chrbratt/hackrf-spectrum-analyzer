@@ -46,6 +46,8 @@ public interface HackRFSettings {
 	public ModelValueInt getAmplitudeOffset();
 	
 	public ModelValueInt getWaterfallSpeed();
+
+	public ModelValueInt getWaterfallSensitivity();
 	
 	public ModelValueBoolean isPersistentDisplayVisible();
 	public ModelValueBoolean isWaterfallVisible();

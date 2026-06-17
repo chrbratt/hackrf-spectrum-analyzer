@@ -115,6 +115,12 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValueInt avgIterations = new ModelValueInt("Average Iterations", 20);
     private final ModelValueInt avgOffset = new ModelValueInt("Average Offset", 0);
     private final ModelValueInt waterfallSpeed = new ModelValueInt("Waterfall Speed", 4);
+    // dB trim on the waterfall's automatic black point. 0 = pure auto-contrast;
+    // positive = more sensitive (black point pushed down, so weaker signals
+    // start to show colour); negative = less sensitive (cleaner, only stronger
+    // signals colour). Bounded so the auto-range stays well-behaved.
+    private final ModelValueInt waterfallSensitivity =
+            new ModelValueInt("Waterfall Sensitivity", 0, 1, -12, 12);
     private final ModelValueBoolean spurRemoval = new ModelValueBoolean("Spur Removal", false);
     private final ModelValueBoolean waterfallVisible = new ModelValueBoolean("Waterfall Visible", true);
 
@@ -171,6 +177,7 @@ public class SettingsStore implements HackRFSettings {
     @Override public ModelValueInt getFreqShift() { return freqShift; }
     @Override public ModelValueInt getAmplitudeOffset() { return amplitudeOffset; }
     @Override public ModelValueInt getWaterfallSpeed() { return waterfallSpeed; }
+    @Override public ModelValueInt getWaterfallSensitivity() { return waterfallSensitivity; }
     @Override public ModelValueBoolean isPersistentDisplayVisible() { return persistentDisplay; }
     @Override public ModelValueBoolean isWaterfallVisible() { return waterfallVisible; }
     @Override public ModelValueBoolean isDatestampVisible() { return datestamp; }

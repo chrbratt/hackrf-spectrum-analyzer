@@ -189,6 +189,14 @@ public final class WaterfallCanvas extends Canvas {
     private double autoSpan = 50;
     private boolean autoRangeInitialised = false;
 
+    /**
+     * User sensitivity trim (dB) applied on top of the automatic black point.
+     * Positive lowers the black point (weaker signals start to colour), negative
+     * raises it (cleaner, only stronger signals colour). Volatile: written on
+     * the FX thread, read on the engine thread in {@link #updateAutoRange}.
+     */
+    private volatile double sensitivityDb = 0;
+
     /** EMA weight for the per-row noise/peak estimates (smaller = smoother). */
     private static final double AUTO_RANGE_EMA = 0.1;
     /**
@@ -255,6 +263,15 @@ public final class WaterfallCanvas extends Canvas {
         this.chartXOffset = Math.max(0, xOffsetLeft);
         this.chartWidth = Math.max(MIN_BUFFER_WIDTH, chartWidthPx);
         resizeBuffers();
+    }
+
+    /**
+     * Set the sensitivity trim (dB) layered on the automatic contrast. Positive
+     * reveals weaker signals, negative keeps the waterfall cleaner. Takes effect
+     * on the next pushed row.
+     */
+    public void setWaterfallSensitivity(int dB) {
+        this.sensitivityDb = dB;
     }
 
     /**
@@ -412,7 +429,9 @@ public final class WaterfallCanvas extends Canvas {
         double noiseShoulder = AUTO_HIST_MIN_DBM + shoulderBin;
         double signalPeak = percentileFromHistogram(counted, 0.995);
 
-        double targetStart = noiseShoulder + AUTO_BLACK_MARGIN_DB;
+        // User sensitivity lowers (positive) or raises (negative) the black
+        // point on top of the automatic noise-shoulder estimate.
+        double targetStart = noiseShoulder + AUTO_BLACK_MARGIN_DB - sensitivityDb;
         double targetSpan = Math.max(AUTO_MIN_SPAN_DB,
                 (signalPeak + AUTO_PEAK_MARGIN_DB) - targetStart);
 
