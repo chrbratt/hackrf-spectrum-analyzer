@@ -173,8 +173,41 @@ public final class WaterfallCanvas extends Canvas {
      * per row, not per pixel.
      */
     private volatile ColorPalette palette = new HotIronBluePalette();
-    private double spectrumPaletteSize = 65;
-    private double spectrumPaletteStart = -110;
+
+    /**
+     * Auto-contrast (adaptive dynamic range). The waterfall no longer maps a
+     * fixed dBm window to the palette; instead every pushed row re-estimates
+     * the live spectrum's noise floor and signal peak and maps the palette to
+     * that band, smoothed over time. This keeps real signals bright against a
+     * dark noise floor regardless of gain / band / antenna, so the waterfall
+     * stays visually "in sync" with the chart without any manual dB tuning.
+     *
+     * <p>{@link #autoStart} is the dBm mapped to palette position 0 (coldest);
+     * {@code autoStart + autoSpan} is mapped to position 1 (hottest).
+     */
+    private double autoStart = -100;
+    private double autoSpan = 50;
+    private boolean autoRangeInitialised = false;
+
+    /** EMA weight for the per-row noise/peak estimates (smaller = smoother). */
+    private static final double AUTO_RANGE_EMA = 0.1;
+    /**
+     * Fraction of the histogram's mode count that marks the top edge of the
+     * noise population. Walking up from the noise mode until the count drops
+     * below this fraction finds the "noise shoulder"; the palette black point
+     * is set just above it so noise variance stays dark instead of colouring.
+     */
+    private static final double AUTO_NOISE_SHOULDER_FRACTION = 0.15;
+    /** dB kept above the noise shoulder for the black point (extra clearance). */
+    private static final double AUTO_BLACK_MARGIN_DB = 2;
+    /** dB kept above the peak so the hottest colour isn't clipped off. */
+    private static final double AUTO_PEAK_MARGIN_DB = 3;
+    /** Floor on the mapped span so a quiet band can't amplify noise into colour. */
+    private static final double AUTO_MIN_SPAN_DB = 20;
+    /** Coarse 1-dB histogram bounds used for the robust estimates. */
+    private static final int AUTO_HIST_MIN_DBM = -140;
+    private static final int AUTO_HIST_MAX_DBM = 0;
+    private final int[] autoHistogram = new int[AUTO_HIST_MAX_DBM - AUTO_HIST_MIN_DBM + 1];
 
     private int chartXOffset = 0;
     private int chartWidth = MIN_BUFFER_WIDTH;
@@ -224,14 +257,6 @@ public final class WaterfallCanvas extends Canvas {
         resizeBuffers();
     }
 
-    public void setSpectrumPaletteSize(int dB) {
-        this.spectrumPaletteSize = dB;
-    }
-
-    public void setSpectrumPaletteStart(int dB) {
-        this.spectrumPaletteStart = dB;
-    }
-
     /**
      * Switch between flat (one row per frame, full canvas) and funnel
      * (single seamless waterfall whose timeline brakes smoothly
@@ -272,6 +297,7 @@ public final class WaterfallCanvas extends Canvas {
         if (drawMaxBuffer.length != width) {
             drawMaxBuffer = new float[width];
         }
+        updateAutoRange(spectrum);
         buildNormalizedRow(spectrum, width);
 
         if (funnelEnabled) {
@@ -315,17 +341,18 @@ public final class WaterfallCanvas extends Canvas {
      */
     private void buildNormalizedRow(DatasetSpectrum spectrum, int width) {
         int size = spectrum.spectrumLength();
-        double spectrumPaletteMax = spectrumPaletteStart + spectrumPaletteSize;
+        double start = autoStart;
+        double span = autoSpan <= 0 ? 1 : autoSpan;
+        double max = start + span;
         Arrays.fill(drawMaxBuffer, MINIMUM_DRAW_BUFFER_VALUE);
         double widthDivSize = (double) width / size;
-        double inverseSpectrumPaletteSize = 1d / spectrumPaletteSize;
-        double spectrumPaletteStartDiv = spectrumPaletteStart / spectrumPaletteSize;
+        double inverseSpan = 1d / span;
         for (int i = 0; i < size; i++) {
             double power = spectrum.getPower(i);
             double percentagePower = 0;
-            if (power > spectrumPaletteStart) {
-                if (power < spectrumPaletteMax) {
-                    percentagePower = power * inverseSpectrumPaletteSize - spectrumPaletteStartDiv;
+            if (power > start) {
+                if (power < max) {
+                    percentagePower = (power - start) * inverseSpan;
                 } else {
                     percentagePower = 1;
                 }
@@ -337,6 +364,77 @@ public final class WaterfallCanvas extends Canvas {
                 drawMaxBuffer[pixelX] = (float) percentagePower;
             }
         }
+    }
+
+    /**
+     * Re-estimate the adaptive palette window from the live spectrum, then ease
+     * the mapped window toward it with an EMA so colours don't pump frame to
+     * frame. Uses a coarse 1-dB histogram (one O(width) pass, no sort):
+     *
+     * <ul>
+     *   <li><b>Black point</b> = the noise <em>shoulder</em>. Noise dominates
+     *       the bin count, so the histogram mode is the noise-floor centre.
+     *       Walking up from the mode until the population thins out finds the
+     *       top of the noise spread; the black point sits just above it so the
+     *       whole noise distribution clips to the palette's cold/dark end
+     *       instead of speckling the waterfall with colour.</li>
+     *   <li><b>White point</b> = a high percentile (signal peak) plus a little
+     *       headroom, floored at a minimum span so a signal-free band can't
+     *       stretch the palette across pure noise.</li>
+     * </ul>
+     */
+    private void updateAutoRange(DatasetSpectrum spectrum) {
+        int size = spectrum.spectrumLength();
+        if (size <= 0) return;
+        Arrays.fill(autoHistogram, 0);
+        int counted = 0;
+        int modeBin = 0;
+        int modeCount = 0;
+        for (int i = 0; i < size; i++) {
+            float power = spectrum.getPower(i);
+            if (Float.isNaN(power) || Float.isInfinite(power)) continue;
+            int bin = (int) Math.round(power) - AUTO_HIST_MIN_DBM;
+            if (bin < 0) bin = 0;
+            else if (bin >= autoHistogram.length) bin = autoHistogram.length - 1;
+            int c = ++autoHistogram[bin];
+            if (c > modeCount) { modeCount = c; modeBin = bin; }
+            counted++;
+        }
+        if (counted == 0) return;
+
+        // Walk up from the noise mode to the shoulder (count thins out).
+        int shoulderThreshold = Math.max(1, (int) (modeCount * AUTO_NOISE_SHOULDER_FRACTION));
+        int shoulderBin = modeBin;
+        for (int bin = modeBin; bin < autoHistogram.length; bin++) {
+            shoulderBin = bin;
+            if (autoHistogram[bin] < shoulderThreshold) break;
+        }
+        double noiseShoulder = AUTO_HIST_MIN_DBM + shoulderBin;
+        double signalPeak = percentileFromHistogram(counted, 0.995);
+
+        double targetStart = noiseShoulder + AUTO_BLACK_MARGIN_DB;
+        double targetSpan = Math.max(AUTO_MIN_SPAN_DB,
+                (signalPeak + AUTO_PEAK_MARGIN_DB) - targetStart);
+
+        if (!autoRangeInitialised) {
+            autoStart = targetStart;
+            autoSpan = targetSpan;
+            autoRangeInitialised = true;
+        } else {
+            autoStart += AUTO_RANGE_EMA * (targetStart - autoStart);
+            autoSpan += AUTO_RANGE_EMA * (targetSpan - autoSpan);
+        }
+    }
+
+    /** dBm at which the cumulative histogram first reaches quantile {@code q}. */
+    private double percentileFromHistogram(int total, double q) {
+        int threshold = (int) Math.ceil(total * q);
+        int cumulative = 0;
+        for (int bin = 0; bin < autoHistogram.length; bin++) {
+            cumulative += autoHistogram[bin];
+            if (cumulative >= threshold) return AUTO_HIST_MIN_DBM + bin;
+        }
+        return AUTO_HIST_MAX_DBM;
     }
 
     /**

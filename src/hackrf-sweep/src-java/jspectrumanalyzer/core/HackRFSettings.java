@@ -43,8 +43,6 @@ public interface HackRFSettings {
 	
 	public ModelValueInt getFreqShift();
 
-	public ModelValueInt getSpectrumPaletteSize();
-	
 	public ModelValueInt getAmplitudeOffset();
 	
 	public ModelValueInt getWaterfallSpeed();
@@ -53,8 +51,6 @@ public interface HackRFSettings {
 	public ModelValueBoolean isWaterfallVisible();
 	
 	public ModelValueBoolean isDatestampVisible();
-
-	public ModelValueInt getSpectrumPaletteStart();
 	
 	public ModelValueInt getPeakFallRate();
 	

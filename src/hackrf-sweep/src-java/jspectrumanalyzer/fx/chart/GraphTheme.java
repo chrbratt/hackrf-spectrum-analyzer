@@ -38,7 +38,7 @@ public enum GraphTheme {
             new Color(0xE6, 0xE6, 0xEC),
             70,
             MaxHoldEffect.NONE,
-            null, null)),
+            null, -90f, -50f)),
 
     /**
      * Warm "thermal camera" palette - deep red max-hold visibly cools down to
@@ -60,8 +60,11 @@ public enum GraphTheme {
             new Color(0xFF, 0xE6, 0xD0),
             70,
             MaxHoldEffect.VALUE_FADE,
-            new Color(0xC8, 0x50, 0x10),   // strengthLow  - dim orange (noise floor)
-            new Color(0xFF, 0xF0, 0xC0))), // strengthHigh - white-hot (strong)
+            new Color[] {
+                    new Color(0xC8, 0x50, 0x10),   // dim orange (noise floor)
+                    new Color(0xFF, 0xF0, 0xC0)    // white-hot (strong)
+            },
+            -90f, -50f)),
 
     /**
      * Cool monochromatic theme - everything sits in the cyan/blue/teal range
@@ -84,8 +87,44 @@ public enum GraphTheme {
             new Color(0xE0, 0xF0, 0xFF),
             55,
             MaxHoldEffect.ALPHA_PULSE,
-            new Color(0x20, 0x40, 0x80),   // strengthLow  - deep blue
-            new Color(0xC0, 0xF0, 0xFF))), // strengthHigh - icy cyan-white
+            new Color[] {
+                    new Color(0x20, 0x40, 0x80),   // deep blue (noise floor)
+                    new Color(0xC0, 0xF0, 0xFF)    // icy cyan-white (strong)
+            },
+            -90f, -50f)),
+
+    /**
+     * High-saturation spectrum-analyzer look tuned for the real dynamic range
+     * of terrestrial signals (roughly 20-30 dB above the noise floor). The
+     * strength gradient runs through a full blue -> cyan -> green -> yellow ->
+     * orange -> red ramp over a deliberately tight -88 to -62 dBm window, so a
+     * signal only ~26 dB above the floor already reaches the hot red end
+     * instead of stalling in the mid tones. Max-hold cools down like the
+     * heatmap.
+     */
+    VIVID("Vivid Spectrum", new Spec(
+            new Color(0x6BFF6B),
+            new Color(0xFFD24A),
+            new Color(0xFF3B3B),
+            new Color(0x40D0FF),
+            new Color(0x0C, 0x0E, 0x18),
+            new Color(0x05, 0x06, 0x0C),
+            new Color(255, 255, 255, 26),
+            new Color(255, 255, 255, 90),
+            new Color(255, 255, 255, 60),
+            new Color(0xC8, 0xD0, 0xE0),
+            new Color(0xE6, 0xEC, 0xF6),
+            80,
+            MaxHoldEffect.VALUE_FADE,
+            new Color[] {
+                    new Color(0x20, 0x40, 0xE0),   // blue        (noise floor)
+                    new Color(0x20, 0xC8, 0xE0),   // cyan
+                    new Color(0x30, 0xE0, 0x50),   // green
+                    new Color(0xF0, 0xE0, 0x20),   // yellow
+                    new Color(0xFF, 0x80, 0x10),   // orange
+                    new Color(0xFF, 0x20, 0x20)    // red         (strong)
+            },
+            -88f, -62f)),
 
     /**
      * No-frills theme for screenshots / printouts: pure black background,
@@ -107,7 +146,7 @@ public enum GraphTheme {
             new Color(0xFF, 0xFF, 0xFF),
             0,
             MaxHoldEffect.NONE,
-            null, null));
+            null, -90f, -50f));
 
     private final String displayName;
     private final Spec spec;
@@ -149,12 +188,12 @@ public enum GraphTheme {
      * Defining it as a {@code record} means a theme change is a simple field
      * read and never accidentally aliases mutable state across themes.
      *
-     * <p>{@code strengthLow} / {@code strengthHigh} are optional. When both
-     * are set the chart paints peaks + realtime with a vertical gradient
-     * spanning {@link #STRENGTH_NOISE_DBM} (noise floor) at {@code low} to
-     * {@link #STRENGTH_STRONG_DBM} (loud signal) at {@code high}. When either
-     * is null the renderer falls back to the flat {@code peaks} / {@code
-     * realtime} colours.
+     * <p>{@code strengthColors} is optional (low -> high order). When it holds
+     * at least two colours the chart paints peaks + realtime with a vertical
+     * gradient spanning {@code strengthNoiseDbm} (noise floor) at the first
+     * colour to {@code strengthStrongDbm} (loud signal) at the last colour;
+     * intermediate colours are spread evenly between. When it is null/short the
+     * renderer falls back to the flat {@code peaks} / {@code realtime} colours.
      */
     public record Spec(
             Color peaks,
@@ -170,11 +209,12 @@ public enum GraphTheme {
             Color title,
             int realtimeFillAlpha,
             MaxHoldEffect maxHoldEffect,
-            Color strengthLow,
-            Color strengthHigh) {
+            Color[] strengthColors,
+            float strengthNoiseDbm,
+            float strengthStrongDbm) {
 
         public boolean hasStrengthGradient() {
-            return strengthLow != null && strengthHigh != null;
+            return strengthColors != null && strengthColors.length >= 2;
         }
 
         public javafx.scene.paint.Color peaksFx()    { return toFx(peaks); }
@@ -186,14 +226,4 @@ public enum GraphTheme {
             return javafx.scene.paint.Color.rgb(c.getRed(), c.getGreen(), c.getBlue());
         }
     }
-
-    /** Bottom of the strength gradient ("noise floor"). Anything weaker
-     *  clamps to {@code strengthLow}. Picked to match a typical HackRF
-     *  noise floor with the internal LNA on. */
-    public static final float STRENGTH_NOISE_DBM = -90f;
-
-    /** Top of the strength gradient ("loud signal"). Anything stronger
-     *  clamps to {@code strengthHigh}. Picked so a Wi-Fi / FM beacon a few
-     *  metres from the antenna lands solidly in the bright zone. */
-    public static final float STRENGTH_STRONG_DBM = -50f;
 }

@@ -204,13 +204,6 @@ public final class MainWindow {
             }
         }));
 
-        settings.getSpectrumPaletteStart().addListener(() ->
-                waterfall.setSpectrumPaletteStart(settings.getSpectrumPaletteStart().getValue()));
-        settings.getSpectrumPaletteSize().addListener(() ->
-                waterfall.setSpectrumPaletteSize(Math.max(1, settings.getSpectrumPaletteSize().getValue())));
-        waterfall.setSpectrumPaletteStart(settings.getSpectrumPaletteStart().getValue());
-        waterfall.setSpectrumPaletteSize(Math.max(1, settings.getSpectrumPaletteSize().getValue()));
-
         // Apply the user's palette pick to both the live waterfall and the
         // persistent display, then keep them in sync when the user picks a
         // new theme from the Display tab. Persistent display lives behind a

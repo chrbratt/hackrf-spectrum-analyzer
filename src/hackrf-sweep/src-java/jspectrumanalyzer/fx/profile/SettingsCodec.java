@@ -97,8 +97,6 @@ public final class SettingsCodec {
         putBool(p, "waterfallVisible", s.isWaterfallVisible());
         putBool(p, "persistentDisplay", s.isPersistentDisplayVisible());
         putInt(p, "persistentDecayRate", s.getPersistentDisplayDecayRate());
-        putInt(p, "paletteStart", s.getSpectrumPaletteStart());
-        putInt(p, "paletteSize", s.getSpectrumPaletteSize());
         putInt(p, "apMarkerOpacity", s.getApMarkerOpacity());
         putBool(p, "datestamp", s.isDatestampVisible());
         BigDecimal thickness = s.getSpectrumLineThickness().getValue();
@@ -155,8 +153,6 @@ public final class SettingsCodec {
         applyBool(p, "waterfallVisible", s.isWaterfallVisible());
         applyBool(p, "persistentDisplay", s.isPersistentDisplayVisible());
         applyInt(p, "persistentDecayRate", s.getPersistentDisplayDecayRate());
-        applyInt(p, "paletteStart", s.getSpectrumPaletteStart());
-        applyInt(p, "paletteSize", s.getSpectrumPaletteSize());
         applyInt(p, "apMarkerOpacity", s.getApMarkerOpacity());
         applyBool(p, "datestamp", s.isDatestampVisible());
 

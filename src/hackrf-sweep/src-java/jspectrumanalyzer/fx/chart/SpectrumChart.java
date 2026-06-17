@@ -4,7 +4,10 @@ import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.GradientPaint;
+import java.awt.LinearGradientPaint;
+import java.awt.MultipleGradientPaint;
 import java.awt.Paint;
+import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.text.DecimalFormat;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -423,40 +426,64 @@ public final class SpectrumChart {
     }
 
     /**
-     * Build a vertical {@link GradientPaint} that maps signal strength to
-     * colour using the active theme's {@code strengthLow} (at the noise
-     * floor) and {@code strengthHigh} (at strong-signal level). The paint
-     * uses absolute pixel coordinates derived from the chart's current data
-     * area, so each pixel of a trace picks its colour from the gradient
-     * based on its Y position.
+     * Build a vertical strength gradient that maps signal strength to colour
+     * using the active theme's {@code strengthColors} (first colour at the
+     * noise anchor, last at the strong anchor; intermediates spread evenly).
+     * The paint uses absolute pixel coordinates derived from the chart's
+     * current data area, so each pixel of a trace picks its colour from the
+     * gradient based on its Y position. Two-colour themes use a simple
+     * {@link GradientPaint}; richer themes use a {@link LinearGradientPaint}.
      *
      * <p>Returns the supplied {@code fallback} colour (with optional alpha)
      * when the active theme has no gradient defined or when the data area
      * isn't measurable yet (first paint). Callers stay paint-agnostic: the
-     * renderer accepts both {@link Color} and {@link GradientPaint}.
+     * renderer accepts {@link Color} and gradient paints alike.
      */
     private Paint strengthPaintOr(Color fallback, int alpha) {
         if (!currentSpec.hasStrengthGradient()) {
             return withAlpha(fallback, alpha);
         }
         Rectangle2D area = lastDataArea;
-        if (area.getHeight() < 4) {
+        if (area == null || area.getHeight() < 4) {
             return withAlpha(fallback, alpha);
         }
         // Map dBm -> pixel Y. The Y axis is fixed at [Y_MIN_DBM, Y_MAX_DBM]
         // and the data area is the chart's actual painted plot rect, so:
         //   yPixel = areaTop + (Y_MAX_DBM - dBm) / (Y_MAX_DBM - Y_MIN_DBM) * areaHeight
+        // The dBm anchors are per-theme so a theme can use a tighter window
+        // (the Vivid theme reaches the hot colour ~26 dB above the floor).
         float span = Y_MAX_DBM - Y_MIN_DBM;
         float yStrong = (float) (area.getY()
-                + (Y_MAX_DBM - GraphTheme.STRENGTH_STRONG_DBM) / span * area.getHeight());
+                + (Y_MAX_DBM - currentSpec.strengthStrongDbm()) / span * area.getHeight());
         float yNoise  = (float) (area.getY()
-                + (Y_MAX_DBM - GraphTheme.STRENGTH_NOISE_DBM)  / span * area.getHeight());
-        Color high = withAlpha(currentSpec.strengthHigh(), alpha);
-        Color low  = withAlpha(currentSpec.strengthLow(),  alpha);
-        // cyclic=false (last arg implicit): pixels above yStrong clamp to
-        // `high`, pixels below yNoise clamp to `low`. That's exactly what
-        // the user wants - no surprise wrap-around past the floor / ceiling.
-        return new GradientPaint(0f, yStrong, high, 0f, yNoise, low);
+                + (Y_MAX_DBM - currentSpec.strengthNoiseDbm())  / span * area.getHeight());
+        if (Math.abs(yNoise - yStrong) < 1f) {
+            return withAlpha(fallback, alpha);
+        }
+        Color[] stops = currentSpec.strengthColors();
+        // Two-colour themes keep the original simple GradientPaint; richer
+        // themes use a multi-stop LinearGradientPaint spread evenly between the
+        // noise and strong anchors. NO_CYCLE clamps past both ends so there's
+        // no wrap-around below the floor / above the ceiling.
+        if (stops.length == 2) {
+            return new GradientPaint(
+                    0f, yStrong, withAlpha(stops[1], alpha),
+                    0f, yNoise,  withAlpha(stops[0], alpha));
+        }
+        int n = stops.length;
+        float[] fractions = new float[n];
+        Color[] colors = new Color[n];
+        for (int i = 0; i < n; i++) {
+            fractions[i] = i / (float) (n - 1);
+            colors[i] = withAlpha(stops[i], alpha);
+        }
+        // Fraction 0 sits at the noise anchor (stops[0]); fraction 1 at the
+        // strong anchor (stops[n-1]).
+        return new LinearGradientPaint(
+                new Point2D.Float(0f, yNoise),
+                new Point2D.Float(0f, yStrong),
+                fractions, colors,
+                MultipleGradientPaint.CycleMethod.NO_CYCLE);
     }
 
     private static Color withAlpha(Color c, int alpha) {

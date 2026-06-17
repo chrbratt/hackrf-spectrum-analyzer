@@ -110,15 +110,6 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValueBoolean debugDisplay = new ModelValueBoolean("Debug", false);
     private final ModelValue<BigDecimal> spectrumLineThickness =
             new ModelValue<>("Spectrum Line Thickness", new BigDecimal("1"));
-    // Step 5 dB / 10 dB matches the granularity that's actually visually
-    // meaningful on the waterfall colour ramp. Bounded so the slider snaps
-    // to clean values and the tick labels stay readable in the narrow sidebar.
-    // Palette defaults to the -100..-50 dBm window: that's where almost every
-    // intentional terrestrial signal lives once a real antenna is plugged in,
-    // so the waterfall paints meaningful colour out of the box. Step granularity
-    // (5 / 10) is preserved so the slider snaps to clean labels.
-    private final ModelValueInt spectrumPaletteSize = new ModelValueInt("Palette Size", 50, 5, 5, 150);
-    private final ModelValueInt spectrumPaletteStart = new ModelValueInt("Palette Start", -100, 10, -150, 0);
     private final ModelValueInt amplitudeOffset = new ModelValueInt("Amplitude Offset", 0);
     private final ModelValueInt powerFluxCal = new ModelValueInt("Power Flux Calibration", 50);
     private final ModelValueInt avgIterations = new ModelValueInt("Average Iterations", 20);
@@ -178,13 +169,11 @@ public class SettingsStore implements HackRFSettings {
     @Override public ModelValueBoolean isDebugDisplay() { return debugDisplay; }
     @Override public ModelValueInt getSamples() { return samples; }
     @Override public ModelValueInt getFreqShift() { return freqShift; }
-    @Override public ModelValueInt getSpectrumPaletteSize() { return spectrumPaletteSize; }
     @Override public ModelValueInt getAmplitudeOffset() { return amplitudeOffset; }
     @Override public ModelValueInt getWaterfallSpeed() { return waterfallSpeed; }
     @Override public ModelValueBoolean isPersistentDisplayVisible() { return persistentDisplay; }
     @Override public ModelValueBoolean isWaterfallVisible() { return waterfallVisible; }
     @Override public ModelValueBoolean isDatestampVisible() { return datestamp; }
-    @Override public ModelValueInt getSpectrumPaletteStart() { return spectrumPaletteStart; }
     @Override public ModelValueInt getPeakFallRate() { return peakFallRateSecs; }
     @Override public ModelValueInt getPeakFallTrs() { return peakFallThreshold; }
     @Override public ModelValueInt getPeakHoldTime() { return peakHoldTime; }
