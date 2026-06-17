@@ -102,11 +102,7 @@ public final class ParamsTab extends ScrollPane {
                         FxControls.withTooltip(
                                 FxControls.checkBox("Spur removal", settings.isSpurRemoval()),
                                 "Detect narrow internal spurs (HackRF clock harmonics, USB noise) "
-                                + "and replace them with the local noise floor estimate."),
-                        FxControls.withTooltip(
-                                FxControls.checkBox("Filter spectrum", settings.isFilterSpectrum()),
-                                "Apply a light smoothing filter across adjacent bins to reduce "
-                                + "single-bin variance."))
+                                + "and replace them with the local noise floor estimate."))
         );
         setContent(content);
     }

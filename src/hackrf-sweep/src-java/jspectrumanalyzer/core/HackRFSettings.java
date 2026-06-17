@@ -98,8 +98,6 @@ public interface HackRFSettings {
 	
 	public ModelValueBoolean isMaxHoldMarkerVisible();
 
-	public ModelValueBoolean isFilterSpectrum();
-
 	public ModelValueBoolean isSpurRemoval();
 
 	public void registerListener(HackRFEventListener listener);

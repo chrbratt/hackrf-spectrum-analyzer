@@ -33,7 +33,6 @@ public class SettingsStore implements HackRFSettings {
     private final ModelValueBoolean antennaLNA = new ModelValueBoolean("RF amp", true);
     private final ModelValueBoolean antennaPower = new ModelValueBoolean("Antenna Power", false);
     private final ModelValueInt fftBinHz = new ModelValueInt("RBW", 50);
-    private final ModelValueBoolean filterSpectrum = new ModelValueBoolean("Filter", false);
     private final ModelValue<FrequencyRange> frequency =
             new ModelValue<>("Frequency Range", new FrequencyRange(2400, 2483));
     // Multi-segment plan. null means "use the single-range `frequency` field"
@@ -204,7 +203,6 @@ public class SettingsStore implements HackRFSettings {
     @Override public ModelValueBoolean isChartsMaxHoldVisible() { return showMaxHold; }
     @Override public ModelValueBoolean isPeakMarkerVisible() { return showPeakMarker; }
     @Override public ModelValueBoolean isMaxHoldMarkerVisible() { return showMaxHoldMarker; }
-    @Override public ModelValueBoolean isFilterSpectrum() { return filterSpectrum; }
     @Override public ModelValueBoolean isSpurRemoval() { return spurRemoval; }
 
     public ModelValue<String> getSelectedSerial() { return selectedSerial; }

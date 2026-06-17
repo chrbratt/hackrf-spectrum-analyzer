@@ -189,6 +189,22 @@ public final class SpectrumChart {
         // change). Listener fires on the model thread; bounce to FX.
         settings.getGraphTheme().addListener(() -> javafx.application.Platform.runLater(
                 () -> applyTheme(settings.getGraphTheme().getValue().spec())));
+
+        // Line thickness has no inline control - it only changes when a saved
+        // profile is loaded - but applyTheme() does not touch strokes, so push
+        // the new widths straight to the renderers here. Without this a loaded
+        // profile's thickness wouldn't take effect until the next sweep restart.
+        settings.getSpectrumLineThickness().addListener(() -> javafx.application.Platform.runLater(
+                this::applyLineThickness));
+    }
+
+    /** Re-apply the configured stroke widths to all three renderers. */
+    private void applyLineThickness() {
+        float w = settings.getSpectrumLineThickness().getValue().floatValue();
+        lineRenderer.setDefaultStroke(new BasicStroke(w));
+        areaRenderer.setDefaultStroke(new BasicStroke(Math.max(0.6f, w * 0.7f)));
+        maxHoldRenderer.setDefaultStroke(new BasicStroke(w));
+        chart.fireChartChanged();
     }
 
     /**

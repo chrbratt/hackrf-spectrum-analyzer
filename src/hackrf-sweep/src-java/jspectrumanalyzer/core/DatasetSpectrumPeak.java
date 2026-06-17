@@ -1,8 +1,6 @@
 package jspectrumanalyzer.core;
 
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
 
 import org.jfree.data.xy.XYSeries;
 
@@ -307,16 +305,8 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 	    return res;
 	}
 	
-	private long debugLastPeakRerfreshTime	= 0;
 	public void refreshPeakSpectrum()
 	{
-		if (false) {
-			long debugMinPeakRefreshTime	= 100;
-			if (System.currentTimeMillis()-debugLastPeakRerfreshTime < debugMinPeakRefreshTime)
-				return;
-			debugLastPeakRerfreshTime	= System.currentTimeMillis();
-		}
-		
 		long timeDiffFromPrevValueMillis = System.currentTimeMillis() - lastAdded;
 		if (timeDiffFromPrevValueMillis < 1)
 			timeDiffFromPrevValueMillis = 1;
@@ -406,16 +396,6 @@ public class DatasetSpectrumPeak extends DatasetSpectrum
 		if (iteration == avgIterations) { iteration = 0; }
 	}
 	
-	private float getMax(float[] inputArray){ 
-	   float maxValue = inputArray[0]; 
-	   for(int i=1;i < inputArray.length;i++){ 
-	      if(inputArray[i] > maxValue){ 
-	         maxValue = inputArray[i]; 
-	      } 
-	   } 
-	   return maxValue; 
-	}
-
 	public void resetPeaks()
 	{
 		Arrays.fill(spectrumPeak, spectrumInitPower);

@@ -83,7 +83,6 @@ public final class SettingsCodec {
 
         // Processing toggles.
         putBool(p, "spurRemoval", s.isSpurRemoval());
-        putBool(p, "filterSpectrum", s.isFilterSpectrum());
 
         // Calibration / offsets.
         putInt(p, "amplitudeOffset", s.getAmplitudeOffset());
@@ -144,7 +143,6 @@ public final class SettingsCodec {
         applyBool(p, "showMaxHoldMarker", s.isMaxHoldMarkerVisible());
 
         applyBool(p, "spurRemoval", s.isSpurRemoval());
-        applyBool(p, "filterSpectrum", s.isFilterSpectrum());
 
         applyInt(p, "amplitudeOffset", s.getAmplitudeOffset());
         applyInt(p, "powerFluxCal", s.getPowerFluxCal());

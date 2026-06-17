@@ -1,7 +1,11 @@
 package jspectrumanalyzer.fx;
 
 import java.awt.geom.Rectangle2D;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
@@ -23,6 +27,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 import jspectrumanalyzer.core.HackRFSettings;
 import jspectrumanalyzer.fx.chart.AllocationOverlayCanvas;
 import jspectrumanalyzer.fx.chart.ApMarkerCanvas;
@@ -288,6 +293,36 @@ public final class MainWindow {
         // overlay itself keeps drag-zoom on the empty area working.
         StackPane.setAlignment(legend, Pos.TOP_RIGHT);
         StackPane.setMargin(legend, new javafx.geometry.Insets(8, 12, 0, 0));
+
+        // Datestamp overlay: a live wall-clock timestamp burnt into the
+        // top-left of the plot, handy for screenshots and recordings. Toggled
+        // by the "Datestamp overlay" checkbox (Params tab). Driven by a 1 s
+        // Timeline rather than the sweep so it keeps ticking even while the
+        // capture is frozen or stopped. Mouse-transparent so it never steals
+        // drag-zoom events from the chart below.
+        Label datestamp = new Label();
+        datestamp.getStyleClass().add("datestamp-overlay");
+        datestamp.setStyle("-fx-text-fill: white; -fx-background-color: rgba(0,0,0,0.35); "
+                + "-fx-padding: 2 6 2 6; -fx-background-radius: 3; -fx-font-size: 11px;");
+        datestamp.setMouseTransparent(true);
+        chartLayer.getChildren().add(datestamp);
+        StackPane.setAlignment(datestamp, Pos.TOP_LEFT);
+        StackPane.setMargin(datestamp, new javafx.geometry.Insets(8, 0, 0, 12));
+
+        DateTimeFormatter datestampFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        Runnable applyDatestampVisible = () -> {
+            boolean v = settings.isDatestampVisible().getValue();
+            datestamp.setVisible(v);
+            datestamp.setManaged(v);
+        };
+        applyDatestampVisible.run();
+        settings.isDatestampVisible().addListener(() -> Platform.runLater(applyDatestampVisible));
+        Timeline datestampTimer = new Timeline(
+                new KeyFrame(Duration.ZERO,
+                        e -> datestamp.setText(LocalDateTime.now().format(datestampFmt))),
+                new KeyFrame(Duration.seconds(1)));
+        datestampTimer.setCycleCount(Timeline.INDEFINITE);
+        datestampTimer.play();
 
         ChartZoomController zoom = new ChartZoomController(
                 spectrumChart.getViewer(), spectrumChart, settings, sdrController,
